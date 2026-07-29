@@ -20,10 +20,9 @@ limit — see [Visual language](docs/visual-language.md).
 
 ## Status
 
-**Pre-implementation.** The repository currently holds the hardware brief, the library
-survey, and the design docs an agent needs to start work. No firmware yet. See
-[the issue tracker](../../issues) for the backlog and
-[docs/roadmap.md](docs/roadmap.md) for how the work is broken up.
+**Pre-implementation.** The repository currently holds the hardware brief, the graphics
+library survey, and the design docs needed to start work. No firmware yet, and the board has
+not been brought up. See [the issue tracker](../../issues) for the backlog.
 
 ## Hardware
 
@@ -74,8 +73,8 @@ Requires the [pico-sdk](https://github.com/raspberrypi/pico-sdk) (2.x), CMake 3.
 
 ## Documentation
 
-Start at **[docs/README.md](docs/README.md)** — it is the reading order for anyone, human
-or agent, picking this project up cold.
+Start at **[docs/README.md](docs/README.md)** — it is the reading order for anyone picking
+this project up cold.
 
 ## License
 
