@@ -1,0 +1,3 @@
+[submodule "third_party/1bit-display"]
+	path = third_party/1bit-display
+	url = git@github.com:Devin-Cooper/1bit-display.git

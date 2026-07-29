@@ -1,0 +1,42 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+*.uf2
+*.elf
+*.elf.map
+*.bin
+*.hex
+*.dis
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+!tools/**/Makefile
+compile_commands.json
+
+# pico-sdk import shim writes this
+pico_sdk_import.cmake.bak
+
+# Editors / tooling
+.vscode/
+.idea/
+.cache/
+*.swp
+*~
+.clangd/
+
+# macOS
+.DS_Store
+
+# Python (tooling under tools/)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local, machine-specific overrides -- never committed
+.env
+local.cmake
