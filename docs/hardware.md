@@ -720,6 +720,50 @@ back); IMU at 0x6A (accelerometer magnitude ≈ 1 g at rest, and it moves when t
 
 ---
 
+## Confirmed on hardware
+
+Measured on the board on 2026-07-29 by the M0 bring-up app in `firmware/`. Anything in this
+section is a bench result, not a reading of the schematic.
+
+| Fact | Value | Note |
+|---|---|---|
+| Silicon stepping | **A2** | `chip_id = 0x20004927`. Erratum RP2350-E9 applies |
+| `clk_peri` after `set_sys_clock_khz(150000)` + re-parent | **150 MHz** | The trap is avoidable exactly as documented; 75 MHz SPI ceiling |
+| Touch controller | **0x15**, `ChipID(0xA7) = 0xB5` | Only after `TP_RST` is pulsed — see below |
+| RTC | **0x51** | Responds to a bare address scan |
+| IMU | **0x6B**, `WHO_AM_I = 0x05`, revision `0x7C` | **Not 0x6A** — see below |
+| Battery, USB attached | **4.00 V** | After the settling described below |
+
+Three findings that contradict or extend the documented picture:
+
+**The IMU is at 0x6B, not 0x6A.** The schematic reads as SDO/SA0 tied to GND, which would put
+the part at 0x6A. On this board it answers only at **0x6B**, so SA0 is strapped high. This is
+almost certainly why every vendor driver probes both addresses. Treat 0x6B as the address and
+0x6A as the fallback, not the other way round.
+
+**The touch controller does not appear on a bus scan until `TP_RST` (GPIO22) is pulsed.** Held
+in reset it does not ACK its own address, so a scan reports it missing and it reads as a dead
+part rather than a held one. Drive `TP_RST` low for ~20 ms, high, then wait ~80 ms before the
+first transaction.
+
+**The battery divider settles slowly, and an early read is wrong by up to 40%.** The 200 kΩ /
+100 kΩ divider presents roughly 67 kΩ to the ADC, which against the capacitance on that node
+gives a genuinely slow RC — this is not sample-and-hold noise and discarding a few conversions
+does not fix it. Measured against a settled 4.001 V:
+
+| Settling | Reading | | Settling | Reading |
+|---|---|---|---|---|
+| ~1 ms | 2.751 V | | ~24 ms | 3.960 V |
+| ~3 ms | 3.122 V | | ~45 ms | 3.997 V |
+| ~6 ms | 3.459 V | | ~96 ms | 4.001 V |
+| ~12 ms | 3.792 V | | | |
+
+**20 ms is within 0.1%; 50 ms is settled with margin.** The design consequence is that reading
+the battery is not cheap — sample it on a slow schedule and cache the result. A
+battery-percentage indicator built on an unsettled read reports a flat battery on a full one.
+
+---
+
 ## Open items
 
 Unresolved questions that need the bench. Record answers against this document.
@@ -727,12 +771,8 @@ Unresolved questions that need the bench. Record answers against this document.
 * **The power-path dispute of §3** — three separate claims (LDO enable source, what Q3 gates,
   whether VBUS feeds VSYS through D4), each with a stated measurement.
 * **Whether the battery-sense divider on GPIO29 needs a GPIO to enable it**, as the 2.8's did. No
-  control net is documented, and this is a direct consequence of the §3 dispute.
-* **Silicon stepping (A2 vs A3)** — read at step 1. A2 carries erratum RP2350-E9 (Bank 0
-  input-buffer leakage overpowering internal pull-downs); prefer pull-**ups** on every input
-  added. E9 does not bite as this design is configured (GPIO29 goes through `adc_gpio_init`,
-  which disables the input buffer and the pulls; GPIO14 and GPIO18 are pulled up), but confirm
-  before adding any pull-down input.
+  control net is documented, and this is a direct consequence of the §3 dispute. The measured
+  settling curve above is consistent with either reading and does not settle it.
 * **Whether 62.5 MHz — and any overclock above it — stays clean warm and over long runs** on this
   board's shorter FPC.
 * **Rot90 / Rot180 / Rot270 MADCTL values.** The `st7789_240x280_1in69()` preset's quarter turns
