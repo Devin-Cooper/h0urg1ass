@@ -99,11 +99,17 @@ int main(int argc, char** argv) {
     flap.render(fb, ft, 60 * SEC + 40'000ull); // mid-flip
     emit(fb, dir, "splitflap-midflip");
 
-    // The dial, at a few durations and touch radii.
-    h0::SettingFace::renderAt(fb, 0, -1);          emit(fb, dir, "dial-a-empty");
-    h0::SettingFace::renderAt(fb, 12 * 60 + 30, -1); emit(fb, dir, "dial-b-1230");
-    h0::SettingFace::renderAt(fb, 25 * 60, 88);      emit(fb, dir, "dial-c-coarse");
-    h0::SettingFace::renderAt(fb, 47 * 60 + 20, 50); emit(fb, dir, "dial-d-fine");
+    // The picker, at rest and mid-drag.
+    { h0::PickerState p; p.minutes = 0;  p.seconds = 0;  h0::SettingFace::renderAt(fb, p); }
+    emit(fb, dir, "pick-a-zero");
+    { h0::PickerState p; p.minutes = 12; p.seconds = 30; h0::SettingFace::renderAt(fb, p); }
+    emit(fb, dir, "pick-b-1230");
+    { h0::PickerState p; p.minutes = 12; p.seconds = 30;
+      p.minutesOffset = -13; p.activeColumn = 1; h0::SettingFace::renderAt(fb, p); }
+    emit(fb, dir, "pick-c-dragging");
+    { h0::PickerState p; p.hours = 1; p.minutes = 45; p.seconds = 5;
+      p.activeColumn = 2; h0::SettingFace::renderAt(fb, p); }
+    emit(fb, dir, "pick-d-hours");
 
     return 0;
 }

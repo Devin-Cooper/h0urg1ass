@@ -34,7 +34,7 @@ add_executable(h0urg1ass
     src/faces/setting_face.cpp
     src/input/orientation.cpp
     src/app/app.cpp
-    src/input/dial.cpp
+    src/input/drag_column.cpp
     ${ONEBIT_SOURCES}
 )
 

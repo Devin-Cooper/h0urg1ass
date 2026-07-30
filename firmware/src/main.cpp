@@ -38,7 +38,7 @@
 #include "board/pins.hpp"
 #include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
-#include "input/dial.hpp"
+#include "input/drag_column.hpp"
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
 #include "faces/setting_face.hpp"
@@ -260,7 +260,8 @@ int main() {
     static h0::App app;
     static h0::OrientationTracker orient;
     static h0::GravityFilter filter;
-    static h0::Dial dial;
+    static h0::DragColumn colMin, colSec;
+    static uint8_t activeCol = 0; // 0 none, 1 minutes, 2 seconds
 
     app.onMotion(h0::MotionEvent::Settled, time_us_64());
     app.setDuration(kDefaultDurationUs, time_us_64());
@@ -316,21 +317,37 @@ int main() {
         }
         if (touchRead) {
             if (app.settingPosture()) {
-                const int steps = dial.update(tp.pressed, tp.x, tp.y);
-                if (steps != 0) {
-                    // Coarse at the rim, fine near the middle, so one gesture
-                    // covers both "about twenty minutes" and the last few
-                    // seconds without a mode switch.
-                    const int64_t perStep = dial.coarse() ? 60 : 5;
-                    const int64_t deltaSec = static_cast<int64_t>(steps) * perStep;
-                    int64_t secs =
-                        static_cast<int64_t>(app.timer().duration() / 1'000'000ull) + deltaSec;
+                // Lock the column on touch-down. A finger drifts sideways during
+                // a vertical drag, and switching wheels mid-gesture would move
+                // whichever one it wandered over.
+                if (tp.pressed && activeCol == 0) {
+                    activeCol = (tp.x < 120) ? 1 : 2;
+                } else if (!tp.pressed) {
+                    activeCol = 0;
+                }
+
+                const int dMin = colMin.update(tp.pressed && activeCol == 1, tp.y);
+                const int dSec = colSec.update(tp.pressed && activeCol == 2, tp.y);
+
+                if (dMin != 0 || dSec != 0) {
+                    int64_t secs = static_cast<int64_t>(app.timer().duration() / 1'000'000ull);
+                    // Minutes carry into hours; seconds do NOT carry into
+                    // minutes. A seconds wheel that dragged the minutes along
+                    // would make the two columns fight each other.
+                    secs += static_cast<int64_t>(dMin) * 60;
+                    const int64_t curSec = ((secs % 60) + 60) % 60;
+                    int64_t newSec = curSec + dSec;
+                    newSec = ((newSec % 60) + 60) % 60;
+                    secs += newSec - curSec;
+
                     if (secs < 0) secs = 0;
-                    if (secs > 99 * 60 + 59) secs = 99 * 60 + 59; // the readout's ceiling
+                    if (secs > 9 * 3600) secs = 9 * 3600; // nine hours is plenty
                     app.setDuration(static_cast<uint64_t>(secs) * 1'000'000ull, now);
                 }
             } else {
-                dial.reset(); // do not measure the next drag against a stale angle
+                colMin.reset();
+                colSec.reset();
+                activeCol = 0;
             }
         }
 
@@ -346,13 +363,15 @@ int main() {
             // The dial replaces the face while flat: a rotary control with no
             // visible ring is undiscoverable, and the timer is not counting
             // anyway.
-            int16_t touchR = -1;
-            if (tp.pressed) {
-                const float dx = static_cast<float>(tp.x - 120);
-                const float dy = static_cast<float>(tp.y - 140);
-                touchR = static_cast<int16_t>(std::sqrt(dx * dx + dy * dy));
-            }
-            h0::SettingFace::renderAt(fb, app.timer().remainingSeconds(now), touchR);
+            const uint32_t total = app.timer().remainingSeconds(now);
+            h0::PickerState ps;
+            ps.hours = total / 3600;
+            ps.minutes = (total % 3600) / 60;
+            ps.seconds = total % 60;
+            ps.minutesOffset = colMin.offsetPx();
+            ps.secondsOffset = colSec.offsetPx();
+            ps.activeColumn = activeCol;
+            h0::SettingFace::renderAt(fb, ps);
         } else {
             h0::IFace* face = &digits;
             switch (app.face()) {

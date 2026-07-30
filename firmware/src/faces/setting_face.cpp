@@ -5,8 +5,9 @@
 #include <1bit/render/primitives.hpp>
 #include <1bit/render/vector_font.hpp>
 
-#include <cmath>
 #include <cstdio>
+
+#include "input/drag_column.hpp"
 
 namespace h0 {
 
@@ -15,120 +16,134 @@ namespace {
 using onebit::BLACK;
 using onebit::WHITE;
 
-// Must match input/dial.hpp's DialConfig, or the drawing lies about where the
-// zones are -- which is worse than not drawing them at all.
-constexpr int16_t CX = 120;
-constexpr int16_t CY = 140;
-constexpr int16_t R_DEAD = 30;   ///< inside this, the dial ignores you
-constexpr int16_t R_SPLIT = 72;  ///< outside this, a step is a minute
-constexpr int16_t R_RING = 92;   ///< where the scale is drawn
-constexpr int16_t R_ORBIT = 66;  ///< seconds dot, and the fine-zone indicator
-constexpr int16_t R_ZONE_OUT = 80; ///< coarse-zone indicator
+constexpr int16_t COL_M_CX = 76;  ///< minutes column centre
+constexpr int16_t COL_S_CX = 164; ///< seconds column centre
+constexpr int16_t COL_HALF = 40;  ///< half the touch/draw width of a column
 
-// Both indicator radii sit clear of the centre readout, which spans roughly
-// +-55 px. A ring drawn through the numbers is worse than no ring.
-static_assert(R_ORBIT > 60, "fine-zone indicator would cross the readout");
-static_assert(R_ZONE_OUT > R_SPLIT && R_ZONE_OUT < R_RING,
-              "coarse indicator must sit between the split and the scale");
+constexpr int16_t WIN_CY = 156;   ///< the selected row
+constexpr int16_t WIN_HALF = 19;  ///< half the selection window height
 
-constexpr float kPi = 3.14159265358979323846f;
+/// Row pitch, in step with the drag. If these disagree the wheel slides at a
+/// different rate than the finger, which reads as lag that no amount of
+/// smoothing will fix.
+constexpr int16_t PITCH = DragColumn::kPixelsPerUnit;
 
-/// Angle for mark `i` of 60, measured so that zero is at the top and the count
-/// runs clockwise -- the direction a right hand turns a knob, and the direction
-/// a clock face already trains everyone to read.
-float markAngle(int i) {
-    return -kPi / 2.0f + (2.0f * kPi * static_cast<float>(i) / 60.0f);
+constexpr int16_t BIG_W = 22, BIG_H = 30, BIG_STROKE = 3;
+constexpr int16_t SMALL_W = 13, SMALL_H = 18, SMALL_STROKE = 2;
+
+// The pitch must clear the tallest glyph or the rows collide into each other.
+static_assert(DragColumn::kPixelsPerUnit >= BIG_H + 4, "rows would overlap");
+
+void centredNumber(onebit::IFramebuffer& fb, int16_t cx, int16_t cy, uint32_t v, bool big) {
+    char buf[6];
+    std::snprintf(buf, sizeof(buf), "%02lu", static_cast<unsigned long>(v % 100));
+    const int16_t w = big ? BIG_W : SMALL_W;
+    const int16_t h = big ? BIG_H : SMALL_H;
+    const int16_t st = big ? BIG_STROKE : SMALL_STROKE;
+    const int16_t sp = big ? 4 : 3;
+    const int16_t tw = onebit::getStringWidth(buf, w, sp);
+    onebit::renderString(fb, buf, static_cast<int16_t>(cx - tw / 2),
+                         static_cast<int16_t>(cy - h / 2), w, h, sp, st, BLACK);
 }
 
-void radialMark(onebit::IFramebuffer& fb, float a, int16_t rInner, int16_t rOuter,
-                bool thick) {
-    const float c = std::cos(a), s = std::sin(a);
-    const int16_t x0 = static_cast<int16_t>(CX + c * static_cast<float>(rInner));
-    const int16_t y0 = static_cast<int16_t>(CY + s * static_cast<float>(rInner));
-    const int16_t x1 = static_cast<int16_t>(CX + c * static_cast<float>(rOuter));
-    const int16_t y1 = static_cast<int16_t>(CY + s * static_cast<float>(rOuter));
-    onebit::drawLine(fb, x0, y0, x1, y1, BLACK);
-    if (thick) {
-        // Stamp a second line one pixel across rather than using drawThickLine,
-        // which leaves gaps on diagonals (1bit-display#10) -- exactly the case
-        // most of these marks are.
-        onebit::drawLine(fb, static_cast<int16_t>(x0 + 1), y0,
-                         static_cast<int16_t>(x1 + 1), y1, BLACK);
+/// One spinner column: the selected value and its neighbours, sliding with the
+/// drag.
+///
+/// `wrap` is the modulus, so the wheel is endless in both directions rather
+/// than stopping at a boundary the user cannot see coming.
+void column(onebit::IFramebuffer& fb, int16_t cx, uint32_t value, int16_t offset,
+            uint32_t wrap) {
+    for (int k = -2; k <= 2; ++k) {
+        const int16_t y = static_cast<int16_t>(WIN_CY + k * PITCH + offset);
+
+        // Values arrive from below when dragging up, so a row below the centre
+        // holds a HIGHER value. Adding `wrap` before the modulus keeps the
+        // operand positive rather than relying on signed-modulus behaviour.
+        const uint32_t v =
+            (value + wrap + static_cast<uint32_t>(static_cast<int32_t>(k))) % wrap;
+
+        // "Selected" is decided by position, not index: mid-drag, the neighbour
+        // that has slid into the window is the one that should look chosen.
+        const bool selected = (y > WIN_CY - PITCH / 2) && (y <= WIN_CY + PITCH / 2);
+        centredNumber(fb, cx, y, v, selected);
     }
 }
 
-/// A ring of short dashes. Solid circles at this size read as a hard boundary;
-/// dashes read as a guide, which is what these are.
-void dashedCircle(onebit::IFramebuffer& fb, int16_t r) {
-    for (int i = 0; i < 60; ++i) {
-        if (i % 2) continue;
-        const float a = markAngle(i);
-        const int16_t x = static_cast<int16_t>(CX + std::cos(a) * static_cast<float>(r));
-        const int16_t y = static_cast<int16_t>(CY + std::sin(a) * static_cast<float>(r));
-        fb.setPixel(x, y, BLACK);
-    }
+/// Erase everything outside the wheel band.
+///
+/// Clipping by overdraw, because the pinned graphics library has no clip
+/// rectangle. Without it the neighbouring rows slide over the window rules and
+/// the labels, which reads as a rendering fault rather than as a wheel.
+void maskOutsideBand(onebit::IFramebuffer& fb, int16_t top, int16_t bottom) {
+    onebit::fillRect(fb, 0, 0, 240, top, WHITE);
+    onebit::fillRect(fb, 0, bottom, 240, static_cast<int16_t>(280 - bottom), WHITE);
 }
 
 } // namespace
 
-void SettingFace::renderAt(onebit::IFramebuffer& fb, uint32_t totalSeconds, int16_t touchR) {
+void SettingFace::renderAt(onebit::IFramebuffer& fb, const PickerState& s) {
     fb.clear(WHITE);
 
-    const uint32_t minutes = totalSeconds / 60;
-    const uint32_t seconds = totalSeconds % 60;
-    const int filled = static_cast<int>(minutes % 60);
+    constexpr int16_t BAND_TOP = static_cast<int16_t>(WIN_CY - 2 * PITCH);
+    constexpr int16_t BAND_BOT = static_cast<int16_t>(WIN_CY + 2 * PITCH);
 
-    // The scale. Marks up to the current minute are long and heavy, the rest
-    // short -- a progress ring you can also count.
-    for (int i = 0; i < 60; ++i) {
-        const bool major = (i % 5) == 0;
-        const bool lit = (i <= filled) && (minutes > 0);
-        const int16_t len = lit ? 14 : (major ? 10 : 5);
-        radialMark(fb, markAngle(i), static_cast<int16_t>(R_RING - len), R_RING, lit || major);
+    // Wheels first, then erase outside the band, then draw the furniture on top
+    // of the clean edge.
+    column(fb, COL_M_CX, s.minutes, s.minutesOffset, 60);
+    column(fb, COL_S_CX, s.seconds, s.secondsOffset, 60);
+    maskOutsideBand(fb, BAND_TOP, BAND_BOT);
+
+    // The selection window. Bold, because these two rules are the only thing
+    // saying which row is the value.
+    for (int16_t d = 0; d < 2; ++d) {
+        onebit::drawLine(fb, 24, static_cast<int16_t>(WIN_CY - WIN_HALF + d), 216,
+                         static_cast<int16_t>(WIN_CY - WIN_HALF + d), BLACK);
+        onebit::drawLine(fb, 24, static_cast<int16_t>(WIN_CY + WIN_HALF - d), 216,
+                         static_cast<int16_t>(WIN_CY + WIN_HALF - d), BLACK);
     }
 
-    // The coarse/fine boundary, as a permanent guide.
-    //
-    // Deliberately NOT drawing the dead-zone radius: at 30 px it runs straight
-    // through the readout, and a ring bisecting the numbers is worse than no
-    // indicator at all. The centre being inert is discovered instantly anyway --
-    // nothing happens.
-    dashedCircle(fb, R_SPLIT);
+    onebit::fillCircle(fb, 120, static_cast<int16_t>(WIN_CY - 9), 3, BLACK);
+    onebit::fillCircle(fb, 120, static_cast<int16_t>(WIN_CY + 9), 3, BLACK);
 
-    // Highlight whichever zone the finger is in, so moving between coarse and
-    // fine is visible while it happens rather than only in the resulting number.
-    // Both indicator radii are chosen to clear the centre text.
-    if (touchR >= R_SPLIT) {
-        onebit::drawCircle(fb, CX, CY, R_ZONE_OUT, BLACK);
-    } else if (touchR >= R_DEAD) {
-        onebit::drawCircle(fb, CX, CY, R_ORBIT, BLACK);
+    // Mark the dragged column by thickening the window rules across it, rather
+    // than underlining below the window -- an underline lands exactly where the
+    // next row sits and collides with it.
+    if (s.activeColumn == 1 || s.activeColumn == 2) {
+        const int16_t cx = (s.activeColumn == 1) ? COL_M_CX : COL_S_CX;
+        const int16_t x0 = static_cast<int16_t>(cx - COL_HALF);
+        const int16_t w = static_cast<int16_t>(2 * COL_HALF);
+        onebit::fillRect(fb, x0, static_cast<int16_t>(WIN_CY - WIN_HALF), w, 4, BLACK);
+        onebit::fillRect(fb, x0, static_cast<int16_t>(WIN_CY + WIN_HALF - 3), w, 4, BLACK);
     }
 
-    // Seconds as a single travelling dot. A second ring of marks would compete
-    // with the minute scale; one dot cannot be misread.
-    if (seconds > 0) {
-        const float a = markAngle(static_cast<int>(seconds));
-        const int16_t sx = static_cast<int16_t>(CX + std::cos(a) * static_cast<float>(R_ORBIT));
-        const int16_t sy = static_cast<int16_t>(CY + std::sin(a) * static_cast<float>(R_ORBIT));
-        onebit::fillCircle(fb, sx, sy, 3, BLACK);
-    }
+    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
+                           static_cast<int16_t>(COL_M_CX - 9), 70, "MIN", BLACK);
+    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
+                           static_cast<int16_t>(COL_S_CX - 9), 70, "SEC", BLACK);
 
-    char buf[12];
-    std::snprintf(buf, sizeof(buf), "%02lu:%02lu", static_cast<unsigned long>(minutes),
-                  static_cast<unsigned long>(seconds));
-    const int16_t w = onebit::getStringWidth(buf, 22, 4);
-    onebit::renderString(fb, buf, static_cast<int16_t>(CX - w / 2),
-                         static_cast<int16_t>(CY - 16), 22, 34, 4, 3, BLACK);
+    // Hours only when there are any. An always-present "0 h" is noise on a timer
+    // that is usually minutes.
+    if (s.hours > 0) {
+        char buf[12];
+        std::snprintf(buf, sizeof(buf), "%lu h", static_cast<unsigned long>(s.hours));
+        const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, buf);
+        onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
+                               static_cast<int16_t>(120 - w / 2), 46, buf, BLACK);
+    }
 
     const char* hint = "DRAG TO SET";
     const int16_t hw = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, hint);
     onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
-                           static_cast<int16_t>(CX - hw / 2),
-                           static_cast<int16_t>(CY + 34), hint, BLACK);
+                           static_cast<int16_t>(120 - hw / 2), 240, hint, BLACK);
 }
 
 void SettingFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now) {
-    renderAt(fb, t.remainingSeconds(now), -1);
+    const uint32_t total = t.remainingSeconds(now);
+    PickerState s;
+    s.hours = total / 3600;
+    s.minutes = (total % 3600) / 60;
+    s.seconds = total % 60;
+    renderAt(fb, s);
 }
 
 } // namespace h0
