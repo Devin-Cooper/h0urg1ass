@@ -74,13 +74,19 @@ TEST_CASE("sub-unit movement is carried, not discarded") {
     CHECK(total == 1);
 }
 
-TEST_CASE("the offset tracks the finger between steps") {
+TEST_CASE("the offset moves between steps, in the drag direction") {
     // This is what makes it feel like a wheel rather than a counter: the digits
     // must move continuously, not only when a step lands.
+    //
+    // The offset carries the GAIN-SCALED movement, not the raw finger travel --
+    // it has to, or the animation and the value would disagree during a flick,
+    // with the wheel visibly lagging the number it is showing. So it is at least
+    // as large as the finger moved, and in the same direction.
     DragColumn c;
     c.update(true, 200);
     c.update(true, static_cast<int16_t>(200 - 3)); // 3 px up, well under a pitch
-    CHECK(c.offsetPx() == -3);
+    CHECK(c.offsetPx() < 0);
+    CHECK(c.offsetPx() <= -3);
     CHECK(c.tracking());
 }
 

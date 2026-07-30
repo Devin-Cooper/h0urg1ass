@@ -28,9 +28,13 @@ int DragColumn::update(bool pressed, int16_t y) {
     // Scale by speed. Applied to the movement rather than to the step count so
     // the wheel still tracks the finger continuously -- gain changes how much
     // value a pixel is worth, not whether the animation follows.
+    //
+    // Continuous rather than banded: with thresholds, a drag sitting near one
+    // flips between rates and reads as the control stuttering.
     const int16_t mag = static_cast<int16_t>(dy < 0 ? -dy : dy);
-    const int16_t gain = (mag > kFastPx) ? 4 : ((mag > kMediumPx) ? 2 : 1);
-    residual_ = static_cast<int16_t>(residual_ + dy * gain);
+    int16_t gain4 = static_cast<int16_t>(kGainBase + mag);
+    if (gain4 > kGainMax) gain4 = kGainMax;
+    residual_ = static_cast<int16_t>(residual_ + (dy * gain4) / kGainBase);
 
     // Truncation toward zero, with the remainder carried. Without carrying, a
     // slow drag loses a fraction of a unit on every sample and travels visibly

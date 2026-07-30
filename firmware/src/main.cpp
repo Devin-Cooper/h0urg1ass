@@ -157,6 +157,22 @@ float readBatteryVolts() {
            board::power::BAT_DIVIDER_RATIO;
 }
 
+/// Latched by the touch controller's interrupt.
+///
+/// TP_INT is a ~1 ms PULSE, not a level held while a finger is down. Polling it
+/// as a GPIO at frame rate misses almost every one -- measured, four samples in
+/// twenty seconds of dragging -- so an edge interrupt latches it instead. The
+/// few samples that did land were huge jumps, which then tripped the drag
+/// column's fast-flick gain: the control was both starved and twitchy from the
+/// same cause.
+volatile bool g_touchIrq = false;
+
+void touchIrqHandler(uint gpio, uint32_t events) {
+    (void)gpio;
+    (void)events;
+    g_touchIrq = true;
+}
+
 const char* orientationName(h0::Orientation o) {
     switch (o) {
         case h0::Orientation::UprightA: return "UPRIGHT";
@@ -237,6 +253,10 @@ int main() {
 
     static board::Cst816 touch;
     const bool touchOk = touch.begin();
+    if (touchOk) {
+        gpio_set_irq_enabled_with_callback(board::touch::INT, GPIO_IRQ_EDGE_FALL, true,
+                                           &touchIrqHandler);
+    }
     printf("touch %s", touchOk ? "ok" : "NOT FOUND");
     if (touchOk) printf(" id 0x%02X", touch.chipId());
     printf("\nbattery %.2f V\n", static_cast<double>(readBatteryVolts()));
@@ -274,6 +294,8 @@ int main() {
     const char* lastEvent = "";
     uint32_t frames = 0;
     uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
+    uint64_t lastTouchUs = 0;
+    bool touchActive = false;
 
     while (true) {
         const uint64_t now = time_us_64();
@@ -304,16 +326,50 @@ int main() {
 
         // The dial is live only while the device is flat -- the setting posture.
         // Elsewhere a pocket could rewrite a running timer, and there is no undo.
-        // Only transact when the controller says it has something. TP_INT is
-        // active low and idles high, so this costs a GPIO read instead of a bus
-        // transaction -- and crucially it means an idle (or sleeping) touch
-        // controller is never poked, which is what was wedging the bus.
+        // Read on the latched interrupt, so no bus transaction happens while
+        // nothing is being touched -- which is what stopped the bus wedging.
         board::TouchPoint tp{};
         bool touchRead = false;
-        if (touchOk && gpio_get(board::touch::INT) == 0) {
+
+        // The interrupt starts a drag; once a finger is down we poll every frame
+        // for the duration. Relying on catching every pulse would drop samples
+        // mid-drag, and a picker starved of samples is both unresponsive and --
+        // because the gaps look like fast movement -- jerky.
+        //
+        // Polling only while a finger is actually down keeps the bus quiet the
+        // rest of the time, which is what stopped it wedging.
+        if (touchOk && (g_touchIrq || touchActive)) {
+            g_touchIrq = false;
             ++touchReads;
             touchRead = touch.read(tp);
             if (!touchRead) ++touchFails;
+            if (touchRead && tp.pressed) {
+                touchActive = true;
+                lastTouchUs = now;
+            } else if (touchRead && !tp.pressed) {
+                touchActive = false;
+                lastTouchUs = 0;
+            }
+        }
+
+        // Belt and braces: if the controller goes quiet without ever reporting a
+        // release, infer one. Otherwise the columns keep a stale drag reference
+        // and the next touch jumps.
+        if (touchActive && lastTouchUs != 0 && now - lastTouchUs > 200'000ull) {
+            touchActive = false;
+            lastTouchUs = 0;
+            tp.pressed = false;
+            touchRead = true;
+        }
+
+        // The controller stops pulsing when the finger lifts, so a release is
+        // never reported -- it has to be inferred from silence. Without this the
+        // columns keep their drag reference forever and the next touch is
+        // measured against a stale position.
+        if (!touchRead && lastTouchUs != 0 && now - lastTouchUs > 80'000ull) {
+            lastTouchUs = 0;
+            tp.pressed = false;
+            touchRead = true; // deliver the release
         }
         if (touchRead) {
             if (app.settingPosture()) {

@@ -31,9 +31,15 @@ public:
     /// is worth more per pixel than a careful nudge, so the same control gives
     /// both coarse traversal and single-unit precision without a mode switch.
     ///
-    /// Thresholds are per-sample movement at the ~40 Hz poll rate.
-    static constexpr int16_t kFastPx = 9;   ///< above this, 4x
-    static constexpr int16_t kMediumPx = 4; ///< above this, 2x
+    /// Gain rises smoothly with per-sample speed rather than in steps.
+    ///
+    /// Banded gain (1x / 2x / 4x) is audible in the hand: a drag hovering near a
+    /// threshold jumps between rates and reads as the control stuttering. The
+    /// curve is `1 + mag/4`, capped, which is continuous and monotonic.
+    ///
+    /// Kept in quarters so it is integer arithmetic all the way down.
+    static constexpr int16_t kGainBase = 4;   ///< = 1.0x, in quarters
+    static constexpr int16_t kGainMax = 20;   ///< = 5.0x
 
     /// Feed a touch sample. Returns the change in units since the last call --
     /// **positive when dragging up**, matching a physical wheel turning under

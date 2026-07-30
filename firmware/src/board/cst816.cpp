@@ -13,7 +13,16 @@ namespace {
 // 0x01 GestureID, 0x02 FingerNum, 0x03..0x06 X/Y -- read as one burst.
 constexpr uint8_t REG_GESTURE = 0x01;
 constexpr uint8_t REG_CHIP_ID = 0xA7;
+constexpr uint8_t REG_IRQ_CTL = 0xFA;
+constexpr uint8_t REG_IRQ_PULSE_WIDTH = 0xED; ///< units of 0.1 ms
+constexpr uint8_t REG_NOR_SCAN_PER = 0xEE;    ///< units of 10 ms
 constexpr uint8_t REG_DIS_AUTO_SLEEP = 0xFE;
+
+// IrqCtl bits. Without EnTouch the controller never asserts INT at all, so an
+// interrupt-driven reader sees nothing and a polled one sees a ~1 ms pulse it
+// almost always misses.
+constexpr uint8_t IRQ_EN_TOUCH = 0x40;  ///< assert while a finger is down
+constexpr uint8_t IRQ_EN_CHANGE = 0x20; ///< assert when the report changes
 
 constexpr uint8_t CHIP_ID_EXPECTED = 0xB5;
 constexpr uint8_t DIS_AUTO_SLEEP = 0x07;
@@ -52,8 +61,18 @@ bool Cst816::begin() {
     if (chipId_ != CHIP_ID_EXPECTED) return false;
 
     // Keep it awake. The default 2 s auto-sleep costs a wake delay on the first
-    // sample of every drag, which on a dial reads as the control ignoring you.
-    writeReg(REG_DIS_AUTO_SLEEP, DIS_AUTO_SLEEP);
+    // sample of every drag, which reads as the control ignoring you.
+    if (!writeReg(REG_DIS_AUTO_SLEEP, DIS_AUTO_SLEEP)) return false;
+
+    // Actually enable the interrupt. Omitting this is silent: the part still
+    // answers register reads perfectly, it simply never signals, so a reader
+    // waiting on INT gets nothing and looks like a wiring fault.
+    if (!writeReg(REG_IRQ_CTL, IRQ_EN_TOUCH | IRQ_EN_CHANGE)) return false;
+
+    // Widen the pulse from the default 1 ms. Even with an edge interrupt a
+    // wider pulse is cheap insurance, and it lets a polled fallback work.
+    writeReg(REG_IRQ_PULSE_WIDTH, 20); // 2 ms
+    writeReg(REG_NOR_SCAN_PER, 1);     // 10 ms scan -> ~100 Hz while touched
     return true;
 }
 
