@@ -25,6 +25,7 @@ target_include_directories(onebit_host PUBLIC ${ONEBIT_ROOT}/include ${ONEBIT_RO
 # makes this build possible, and this target is what enforces it.
 add_library(h0_input STATIC
     ${FW_SRC}/input/orientation.cpp
+    ${FW_SRC}/app/app.cpp
 )
 target_include_directories(h0_input PUBLIC ${FW_SRC})
 
@@ -40,6 +41,7 @@ add_executable(h0urg1ass_tests
     test_timer_model.cpp
     test_faces.cpp
     test_orientation.cpp
+    test_app.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE

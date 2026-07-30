@@ -29,6 +29,7 @@ add_executable(h0urg1ass
     src/faces/hourglass_face.cpp
     src/faces/splitflap_face.cpp
     src/input/orientation.cpp
+    src/app/app.cpp
     ${ONEBIT_SOURCES}
 )
 
