@@ -1039,6 +1039,36 @@ relock and re-init. One armed alarm and one sleep is both simpler and cheaper.
 
 ---
 
+## 8.6 Sleep-entry checklist
+
+Ordered, with the reason attached to each, because the failure modes are silent
+and several cost more than the sleep saves. The first three are the ones that
+turn a sleep into a lie.
+
+1. **Backlight**: take GPIO25 back as SIO and drive it low. Do *not* rely on
+   `pwm_set_gpio_level(25, 0)` — the pad isolation latch captures the pad's
+   *instantaneous* level, so entering sleep on a PWM high phase latches full
+   brightness for the whole window.
+2. **Buzzer GPIO2**: same treatment, and measure the transducer's DC resistance
+   first. If it is a magnetic coil at 16–42 Ω, a stuck-high GPIO2 is 80–200 mA
+   and empties the pack in hours.
+3. **Panel**: fade the backlight to zero *then* send SLPIN. SLPIN blanks the
+   panel itself, so the reverse order shows a lit blank screen. This is a blind
+   write — there is no MISO, so the only confirmation is a meter.
+4. **LCD_CS (GPIO9) and LCD_RST (GPIO13) high**, so the sleeping panel is
+   neither selected nor held in reset.
+5. **Touch**: clear `DisAutoSleep` and let the part reach its own 6 µA standby
+   after two idle seconds. Not its 1 µA sleep mode, which needs a TP_RST pulse
+   to leave and so removes touch-to-wake.
+6. **IMU**: `CTRL1.SensorDisable = 1`, or wake-on-motion at 11 Hz if
+   shake-to-wake is wanted — about 35 µA against 6 µA powered down.
+7. **I²C**: read GPIO6/7 as inputs and confirm both are high. A bus left wedged
+   is 38–103 µA against the pull-ups for the whole sleep, and `recoverI2c()`
+   exists precisely because wedging happens.
+8. **Check the return value of the sleep call.** A touch arriving during entry
+   halts the transition, and the SDK helper then spins in `__wfi()` forever,
+   leaving the device awake behind a dark screen at full current.
+
 ## 9. Recommended power state machine
 
 *Battery-side current. Runtime assumes a 500 mAh cell — a typical companion for this board's

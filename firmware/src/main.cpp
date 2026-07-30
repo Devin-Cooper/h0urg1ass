@@ -24,6 +24,7 @@
 #include "hardware/clocks.h"
 #include "hardware/i2c.h"
 #include "hardware/structs/sysinfo.h"
+#include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 
 #include <1bit/core/framebuffer.hpp>
@@ -94,13 +95,83 @@ constexpr uint64_t kIdleAfterUs = 20ull * 1'000'000ull;
 /// alive only because a finger is on the button. Invisible over USB, where VBUS
 /// reaches VSYS through D4 regardless.
 void latchPower() {
-    gpio_init(board::power::SYS_EN);
-    gpio_set_dir(board::power::SYS_EN, GPIO_OUT);
-    gpio_put(board::power::SYS_EN, 1);
+    // Order matters twice over, and gpio_init() gets both wrong.
+    //
+    // SIO must be driving the pad HIGH before anything clears pad isolation.
+    // gpio_init() sets the pin to input and value 0 first, then calls
+    // gpio_set_function(), whose last act is to clear the pad's ISO bit. On a
+    // wake from a POWMAN power state that isolation latch is the only thing
+    // holding this pad high -- there is no finger on the button by then -- so
+    // clearing it first drops the latch and the rail collapses. Invisible over
+    // USB, where VBUS reaches VSYS through D4 whatever this pin does.
+    sio_hw->gpio_set = 1u << board::power::SYS_EN;
+    sio_hw->gpio_oe_set = 1u << board::power::SYS_EN;
+    gpio_set_function(board::power::SYS_EN, GPIO_FUNC_SIO); // this clears ISO
+    // ...so set it again afterwards. An isolated pad keeps its output enable and
+    // level through the SDK's reset sweep, through FUNCSEL changes, and through
+    // the low-leakage pin helpers, because the ISO bits are explicitly not
+    // reset by the PADS block reset. A watchdog reset no longer switches the
+    // board off on battery.
+    //
+    // It does not survive the always-on domain reset -- power-on, brownout, the
+    // RUN pin, or a debug rescue. Those five still power the board down, which
+    // is correct: they are the cases where nobody knows what state anything is
+    // in.
+    hw_set_bits(&pads_bank0_hw->io[board::power::SYS_EN], PADS_BANK0_GPIO0_ISO_BITS);
 }
 
 /// set_sys_clock_khz() re-parents clk_peri to PLL_USB at 48 MHz, capping SPI at
 /// 24 MHz -- slower than stock, while the CPU gets faster.
+/// Stop clocking things this board does not have, and stop clocking most of the
+/// rest while the core is asleep.
+///
+/// The main loop already spends about three quarters of every frame parked in
+/// WFE inside sleep_ms(), and the chip enters its SLEEP state whenever both
+/// cores are in WFE and the DMA is idle -- core 1 is never launched, so it has
+/// been sleeping in the bootrom since boot. But SLEEP_EN0/1 come out of reset as
+/// all-ones, so that state has been gating precisely nothing.
+///
+/// WAKE_EN is the set clocked while running; SLEEP_EN the set clocked while
+/// asleep. Only genuinely absent peripherals are dropped from WAKE_EN.
+///
+/// What must stay in SLEEP_EN, and why -- getting any of these wrong hangs the
+/// device in WFE with no way back except the BOOT button:
+///   TIMER0 + TICKS + REF_TICKS  the alarm that ends sleep_ms(). Gate these and
+///                               the timer stops counting, the deadline never
+///                               arrives, and the loop waits forever.
+///   IO + PADS                   GPIO edge detect. The touch interrupt dies
+///                               silently without them.
+///   USB + USBCTRL               so the console still services, and so the
+///                               1200-baud BOOTSEL reflash keeps working.
+///   PWM                         NEVER gate this. A peripheral resumes in the
+///                               state it was left in, so the backlight PWM
+///                               counter freezes wherever it stopped -- at
+///                               64/255 that is a one-in-four chance of holding
+///                               full brightness for the whole idle window. The
+///                               buzzer shares the block.
+void pruneClockGating() {
+    // Absent or unused: this board has no UART, and uses i2c1 and spi1 only.
+    const uint32_t drop0 = CLOCKS_SLEEP_EN0_CLK_SYS_SHA256_BITS |
+                           CLOCKS_SLEEP_EN0_CLK_SYS_I2C0_BITS;
+    const uint32_t drop1 = CLOCKS_SLEEP_EN1_CLK_SYS_UART1_BITS |
+                           CLOCKS_SLEEP_EN1_CLK_PERI_UART1_BITS |
+                           CLOCKS_SLEEP_EN1_CLK_SYS_UART0_BITS |
+                           CLOCKS_SLEEP_EN1_CLK_PERI_UART0_BITS |
+                           CLOCKS_SLEEP_EN1_CLK_SYS_TRNG_BITS |
+                           CLOCKS_SLEEP_EN1_CLK_SYS_TIMER1_BITS |
+                           CLOCKS_SLEEP_EN1_CLK_SYS_SPI0_BITS;
+
+    clocks_hw->wake_en0 &= ~drop0;
+    clocks_hw->wake_en1 &= ~drop1;
+
+    // Asleep, additionally drop the flash interface. It is by far the largest
+    // single entry in the table, and nothing fetches an instruction while the
+    // core is in WFE -- the hardware restores these clocks on the way out of
+    // the sleep state, before any fetch can happen.
+    clocks_hw->sleep_en0 = clocks_hw->wake_en0;
+    clocks_hw->sleep_en1 = clocks_hw->wake_en1 & ~CLOCKS_SLEEP_EN1_CLK_SYS_XIP_BITS;
+}
+
 void repointPeripheralClock() {
     clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
                     clock_get_hz(clk_sys), clock_get_hz(clk_sys));
@@ -353,6 +424,22 @@ int main() {
         printf(" ms/tick (rounds 1-4)\n");
     }
 
+    // Clock pruning goes here, after every peripheral is up and configured, so
+    // nothing is initialised through a gated clock.
+    pruneClockGating();
+
+    // A safety net for exactly that change. If a clock this loop needs turns out
+    // to be gated, the core parks in WFE and never returns -- and a device that
+    // never returns cannot be reflashed over its own USB, because the 1200-baud
+    // BOOTSEL handshake needs live firmware to answer it. The watchdog turns
+    // that dead end into a reboot every eight seconds, and each reboot opens the
+    // three-second window at the top of main() that flashing relies on.
+    //
+    // Safe on battery only because the pad isolation set in latchPower() holds
+    // GPIO15 through a watchdog reset. Before that change this would have
+    // switched the board off instead of restarting it.
+    watchdog_enable(8000, true);
+
     printf("\nready -- stand it up to start, lay it flat to pause,\n");
     printf("turn it over to reset, face down to silence.\n");
     printf("while flat, drag the MIN / SEC columns to set the time.\n");
@@ -403,6 +490,12 @@ int main() {
             // never produces the FlatBack->vertical transition that Raised
             // needs, so the picker would stay live in the hand.
             app.setFlat(orient.current() == h0::Orientation::FlatBack);
+
+            // The touch controller costs 1.6 mA held awake and 6 uA in its own
+            // standby, and touch is only used by the picker. Hold it awake only
+            // while the picker is live, so the wake delay lands where nobody is
+            // dragging and the current lands where somebody is.
+            if (touchOk) touch.setHeldAwake(app.settingPosture());
 
             if (orient.current() == h0::Orientation::UprightA) inverted = false;
             else if (orient.current() == h0::Orientation::UprightB) inverted = true;
@@ -583,6 +676,8 @@ int main() {
         // picker, the font and the touch map that the device can be turned over.
         // Everything upstream keeps working in a content space where up is up.
         if (inverted) h0::rotate180(fb);
+
+        watchdog_update();
 
         lcd.pushDirty(fb, tracker.update(fb));
         lcd.waitIdle();

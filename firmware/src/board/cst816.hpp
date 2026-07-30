@@ -55,11 +55,25 @@ public:
 
     uint8_t chipId() const { return chipId_; }
 
+    /// Hold the controller in its 1.6 mA dynamic mode, or let it fall back to
+    /// its own 6 uA standby after two idle seconds.
+    ///
+    /// Awake costs 1.6 mA against 6 uA, which is most of the touch subsystem's
+    /// budget -- but standby adds a wake delay to the first sample of a drag,
+    /// and a picker that ignores the first few millimetres of a gesture reads
+    /// as broken. So it is held awake only while the picker is actually live,
+    /// which is the one posture touch is used in.
+    ///
+    /// Deliberately NOT the part's sleep mode: that is 1 uA but recoverable
+    /// only by pulsing TP_RST, which would remove touch-to-wake entirely.
+    bool setHeldAwake(bool awake);
+
 private:
     bool readRegs(uint8_t reg, uint8_t* dst, size_t len);
     bool writeReg(uint8_t reg, uint8_t value);
 
     uint8_t chipId_ = 0;
+    bool heldAwake_ = false;
 };
 
 } // namespace board

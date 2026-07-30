@@ -25,7 +25,8 @@ constexpr uint8_t IRQ_EN_TOUCH = 0x40;  ///< assert while a finger is down
 constexpr uint8_t IRQ_EN_CHANGE = 0x20; ///< assert when the report changes
 
 constexpr uint8_t CHIP_ID_EXPECTED = 0xB5;
-constexpr uint8_t DIS_AUTO_SLEEP = 0x07;
+constexpr uint8_t DIS_AUTO_SLEEP = 0x07;   ///< hold awake
+constexpr uint8_t ALLOW_AUTO_SLEEP = 0x00; ///< stand down after 2 s idle
 
 constexpr uint32_t I2C_TIMEOUT_US = 5000;
 
@@ -60,9 +61,10 @@ bool Cst816::begin() {
     if (!readRegs(REG_CHIP_ID, &chipId_, 1)) return false;
     if (chipId_ != CHIP_ID_EXPECTED) return false;
 
-    // Keep it awake. The default 2 s auto-sleep costs a wake delay on the first
-    // sample of every drag, which reads as the control ignoring you.
-    if (!writeReg(REG_DIS_AUTO_SLEEP, DIS_AUTO_SLEEP)) return false;
+    // Start in standby-permitted. The picker is not live at boot, and holding
+    // the part awake costs 1.6 mA against 6 uA for a responsiveness nobody can
+    // use until the device is laid flat.
+    if (!writeReg(REG_DIS_AUTO_SLEEP, ALLOW_AUTO_SLEEP)) return false;
 
     // Actually enable the interrupt. Omitting this is silent: the part still
     // answers register reads perfectly, it simply never signals, so a reader
@@ -103,6 +105,13 @@ bool Cst816::read(TouchPoint& out) {
 
     out.x = x;
     out.y = y;
+    return true;
+}
+
+bool Cst816::setHeldAwake(bool awake) {
+    if (awake == heldAwake_) return true;
+    if (!writeReg(REG_DIS_AUTO_SLEEP, awake ? DIS_AUTO_SLEEP : ALLOW_AUTO_SLEEP)) return false;
+    heldAwake_ = awake;
     return true;
 }
 

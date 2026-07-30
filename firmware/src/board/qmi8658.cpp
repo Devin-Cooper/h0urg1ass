@@ -26,10 +26,18 @@ constexpr uint8_t CTRL1_CONFIG = 0x60;
 // CTRL2: accelerometer full scale and output rate.
 //   4g -- we only ever measure 1g of gravity, so a smaller range means finer
 //         resolution per LSB. 8g would waste a bit for no benefit here.
-//   125 Hz -- far more than a 350 ms dwell needs, and cheap.
+//   128 Hz -- far more than a 350 ms dwell needs, and in the low-power mode it
+//         is both cheaper and quieter than the high-resolution 125 Hz.
 constexpr uint8_t ACC_RANGE_4G = 0x01 << 4;
-constexpr uint8_t ACC_ODR_125HZ = 0x06;
-constexpr uint8_t CTRL2_CONFIG = ACC_RANGE_4G | ACC_ODR_125HZ;
+/// 128 Hz LOW-POWER, not the 125 Hz high-resolution mode.
+///
+/// 55 uA against 134, and quieter with it -- 125 ug/sqrt(Hz) against 150. The
+/// low-power modes are only available with the gyroscope disabled, which is
+/// already the case here. (Every figure in that datasheet is specified at VDD
+/// 1.8 V; this board runs the part at 3.3 V, so treat them as ratios rather
+/// than absolutes.)
+constexpr uint8_t ACC_ODR_128HZ_LP = 0x0C;
+constexpr uint8_t CTRL2_CONFIG = ACC_RANGE_4G | ACC_ODR_128HZ_LP;
 
 // CTRL5: hardware low-pass off. Filtering happens in software, where it can be
 // tuned and tested on a host. (The vendor driver also ends up here, though by
