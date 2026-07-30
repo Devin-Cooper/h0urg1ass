@@ -1,14 +1,17 @@
-// h0urg1ass -- M1 bring-up: first light on the glass.
+// h0urg1ass -- interactive build.
 //
-// Builds on M0 (power latch, clocks, i2c inventory, battery) and adds the
-// ST7789V2 driver. Sequence:
+// The timer, driven by how you hold it:
 //
-//   1. a full-screen 1-pixel checkerboard, held long enough to photograph.
-//      This is the only signal-integrity check the panel offers -- it is
-//      write-only, so there is no controller ID read and no GRAM read-back.
-//      It also makes the rounded-corner radius directly measurable.
-//   2. a layout page showing the safe area and the corner clipping.
-//   3. push timings, full frame and partial region.
+//   stand it up       start, or resume
+//   lay it flat       pause; this is also the setting posture
+//   turn it over      reset to full and run
+//   face down         silence a ringing alarm
+//
+// A debug strip along the bottom reports the raw IMU vector and the classified
+// posture. It is there because the IMU's axes are not the panel's -- the part is
+// soldered in whatever orientation suited the layout -- and the mapping can only
+// be established by holding the board in known postures and reading it off.
+// Once `axisMap` is right, the strip goes.
 //
 // Two rules are load-bearing and are commented at their call sites:
 //   1. GPIO15 goes high before anything else, or the board dies on battery.
@@ -19,21 +22,24 @@
 #include "hardware/adc.h"
 #include "hardware/clocks.h"
 #include "hardware/i2c.h"
-#include "hardware/pwm.h"
 #include "hardware/structs/sysinfo.h"
 #include "pico/stdlib.h"
 
 #include <1bit/core/framebuffer.hpp>
 #include <1bit/fonts/term_6x9.hpp>
-#include <1bit/fonts/term_8x12.hpp>
 #include <1bit/render/bitmap_font.hpp>
 #include <1bit/render/dirty_rect.hpp>
 #include <1bit/render/primitives.hpp>
-#include <1bit/render/vector_font.hpp>
 
+#include "app/app.hpp"
+#include "board/buzzer.hpp"
 #include "board/pins.hpp"
+#include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
 #include "faces/digits_face.hpp"
+#include "faces/hourglass_face.hpp"
+#include "faces/splitflap_face.hpp"
+#include "input/orientation.hpp"
 #include "timer/timer_model.hpp"
 
 using onebit::BLACK;
@@ -41,78 +47,35 @@ using onebit::WHITE;
 
 namespace {
 
-// 125 MHz, deliberately *below* the 150 MHz datasheet maximum -- because it
-// makes the display 1.65x faster.
-//
-// The PL022 divides clk_peri by an integer prescale and postdiv, and clk_peri
-// follows clk_sys. The panel's own TSCYCW ceiling is 62.5 MHz, so:
-//
-//   clk_sys   achievable SPI <= 62.5     full 240x280 frame   measured
-//   150 MHz   37.5 MHz  (75 is over spec)      28.7 ms ideal   31.6 ms
-//   125 MHz   62.5 MHz  (exactly on spec)      17.2 ms ideal   19.1 ms
-//
-// From 150 MHz the divider can only produce 75 MHz (out of spec) or 37.5 MHz,
-// and there is nothing in between -- so the faster CPU clock costs 12.5 ms of
-// every frame. 125 MHz divides to exactly the panel's rated maximum. This app
-// is bus-bound, not compute-bound, so the 17% less CPU is free and the 1.65x
-// faster panel is not.
-//
-// 250 MHz would also divide to 62.5 MHz, but that is a 1.67x overclock for no
-// display gain. Revisit only if something turns out to be compute-bound.
-//
-// Note this cannot be called SYS_CLK_KHZ: pico-sdk defines that as a macro in
-// hardware/platform_defs.h, and the collision produces a baffling
-// "expected unqualified-id before numeric constant".
+// 125 MHz, deliberately below the 150 MHz maximum: the PL022's integer divider
+// reaches only 75 MHz (over the panel's 62.5 MHz spec) or 37.5 MHz from a
+// 150 MHz clk_peri, so the faster CPU clock costs 12.5 ms of every frame.
+// 125 divides to exactly 62.5. Cannot be named SYS_CLK_KHZ -- pico-sdk defines
+// that as a macro and the collision is baffling.
 constexpr uint32_t kSysClockKhz = 125'000;
 
-/// Settling time for the battery-sense node, measured on this board.
-///
-/// The divider is 200k over 100k, so the ADC sees ~67k against C10/C12 on the
-/// tap. Measured against a settled 4.001 V: ~1 ms → 2.751 V, ~6 ms → 3.459 V,
-/// ~24 ms → 3.960 V, ~45 ms → 3.997 V. An unsettled read is low by up to 40% --
-/// it reports a flat battery on a full one. Reading the battery is therefore
-/// not cheap; sample it on a slow schedule and cache it.
+/// Battery-sense settling, measured: the 200k/100k divider against C10/C12 on
+/// the tap gives a real RC, and an unsettled read is low by up to 40%.
 constexpr uint32_t kBatterySettleMs = 50;
 
-/// Hold the soft power latch.
-///
-/// GPIO15 → R3 1k → base of T1 (SS8050); T1's collector pulls the gate of
-/// Q3 (AO3401) down, passing the battery through to B+. Until firmware asserts
-/// it, the board is alive only because a finger is on the power button. This
-/// must be the first thing main() does.
-///
-/// Invisible over USB, where VBUS reaches VSYS through D4 regardless. A build
-/// that never sets this works perfectly on the bench and fails every time in
-/// the field.
+/// The duration the device starts with, until touch lands.
+constexpr uint64_t kDefaultDurationUs = 2ull * 60ull * 1'000'000ull;
+
+/// Hold the soft power latch. GPIO15 -> R3 1k -> T1 base; T1's collector pulls
+/// Q3's gate down, passing the battery through. Until this runs, the board is
+/// alive only because a finger is on the button. Invisible over USB, where VBUS
+/// reaches VSYS through D4 regardless.
 void latchPower() {
     gpio_init(board::power::SYS_EN);
     gpio_set_dir(board::power::SYS_EN, GPIO_OUT);
     gpio_put(board::power::SYS_EN, 1);
 }
 
-/// Re-parent clk_peri to PLL_SYS.
-///
-/// set_sys_clock_khz() points clk_peri at PLL_USB (48 MHz), capping SPI at
-/// 24 MHz -- slower than stock. Skipping this makes the display slower as the
-/// CPU gets faster, which is a maddening way to misdiagnose a performance bug.
+/// set_sys_clock_khz() re-parents clk_peri to PLL_USB at 48 MHz, capping SPI at
+/// 24 MHz -- slower than stock, while the CPU gets faster.
 void repointPeripheralClock() {
     clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
                     clock_get_hz(clk_sys), clock_get_hz(clk_sys));
-}
-
-void initBuzzer() {
-    gpio_set_function(board::BUZZER, GPIO_FUNC_PWM);
-    const unsigned slice = pwm_gpio_to_slice_num(board::BUZZER);
-    pwm_set_wrap(slice, 2000);
-    pwm_set_clkdiv(slice, 200.0f);
-    pwm_set_gpio_level(board::BUZZER, 0);
-    pwm_set_enabled(slice, true);
-}
-
-void beep(uint32_t ms) {
-    pwm_set_gpio_level(board::BUZZER, 1000);
-    sleep_ms(ms);
-    pwm_set_gpio_level(board::BUZZER, 0);
 }
 
 void initI2c() {
@@ -123,10 +86,8 @@ void initI2c() {
     gpio_pull_up(board::i2c::SCL);
 }
 
-/// Bring the touch controller out of reset.
-///
-/// Without this the CST816 never appears on the bus at all -- a scan simply
-/// does not see it, which reads as a dead part rather than one held in reset.
+/// The CST816 does not ACK its own address until RST is pulsed -- held in reset
+/// it looks like a dead part on a bus scan rather than a held one.
 void resetTouch() {
     gpio_init(board::touch::RST);
     gpio_set_dir(board::touch::RST, GPIO_OUT);
@@ -134,35 +95,9 @@ void resetTouch() {
     sleep_ms(20);
     gpio_put(board::touch::RST, 1);
     sleep_ms(80);
-
-    // Pull-UP, so errata E9 does not apply -- that bites pull-DOWN inputs on A2.
     gpio_init(board::touch::INT);
     gpio_set_dir(board::touch::INT, GPIO_IN);
-    gpio_pull_up(board::touch::INT);
-}
-
-const char* i2cDeviceName(uint8_t addr) {
-    switch (addr) {
-        case board::i2c::ADDR_TOUCH:   return "CST816 touch";
-        case board::i2c::ADDR_RTC:     return "PCF85063A RTC";
-        case board::i2c::ADDR_IMU:     return "QMI8658C IMU (SA0 low)";
-        case board::i2c::ADDR_IMU_ALT: return "QMI8658C IMU (SA0 high)";
-        default:                       return "unknown";
-    }
-}
-
-int scanI2c() {
-    printf("i2c1 scan @ %u Hz\n", board::i2c::BAUD_HZ);
-    int found = 0;
-    for (uint8_t addr = 0x08; addr < 0x78; ++addr) {
-        uint8_t rx;
-        if (i2c_read_blocking_until(i2c1, addr, &rx, 1, false,
-                                    make_timeout_time_ms(10)) >= 0) {
-            printf("  0x%02X  %s\n", addr, i2cDeviceName(addr));
-            ++found;
-        }
-    }
-    return found;
+    gpio_pull_up(board::touch::INT); // pull-UP, so errata E9 does not apply
 }
 
 void initBattery() {
@@ -177,85 +112,54 @@ float readBatteryVolts() {
     for (int i = 0; i < 8; ++i) (void)adc_read();
     uint32_t acc = 0;
     for (int i = 0; i < 32; ++i) acc += adc_read();
-    const float v_adc = (static_cast<float>(acc) / 32.0f) * 3.3f / 4095.0f;
-    return v_adc * board::power::BAT_DIVIDER_RATIO;
+    return (static_cast<float>(acc) / 32.0f) * 3.3f / 4095.0f *
+           board::power::BAT_DIVIDER_RATIO;
 }
 
-void reportChip() {
-    const uint32_t chip_id = sysinfo_hw->chip_id;
-    const uint32_t revision = (chip_id >> 28) & 0xF;
-    printf("RP2350 chip_id=0x%08lx revision=A%lu\n",
-           static_cast<unsigned long>(chip_id), static_cast<unsigned long>(revision));
-    if (revision == 2) {
-        printf("  A2: errata E9 applies -- never configure a pull-down input\n");
+const char* orientationName(h0::Orientation o) {
+    switch (o) {
+        case h0::Orientation::UprightA: return "UPRIGHT";
+        case h0::Orientation::UprightB: return "INVERTED";
+        case h0::Orientation::FlatBack: return "FLAT";
+        case h0::Orientation::FaceDown: return "FACEDOWN";
+        case h0::Orientation::Edge:     return "EDGE";
+        case h0::Orientation::Unknown:  return "?";
     }
-    printf("clk_sys=%lu Hz  clk_peri=%lu Hz%s\n",
-           static_cast<unsigned long>(clock_get_hz(clk_sys)),
-           static_cast<unsigned long>(clock_get_hz(clk_peri)),
-           clock_get_hz(clk_peri) == clock_get_hz(clk_sys) ? "" : "  <-- WRONG");
+    return "?";
 }
 
-// ---------------------------------------------------------------- drawing --
+const char* feedbackName(h0::Feedback f) {
+    switch (f) {
+        case h0::Feedback::Started:  return "START";
+        case h0::Feedback::Paused:   return "PAUSE";
+        case h0::Feedback::Resumed:  return "RESUME";
+        case h0::Feedback::Reset:    return "RESET";
+        case h0::Feedback::Rejected: return "REJECT";
+        case h0::Feedback::AlarmOn:  return "ALARM";
+        case h0::Feedback::AlarmOff: return "HUSH";
+        case h0::Feedback::None:     return "";
+    }
+    return "";
+}
 
-/// Full-screen 1-pixel checkerboard.
+/// Bottom strip: raw IMU vector, mapped posture, last event.
 ///
-/// The worst case for SPI signal integrity and for a buffer race, and the only
-/// integrity check this write-only panel allows. What to look for:
-///   * an even grey field  -> clean
-///   * sparse static that does NOT change when the SPI clock is halved
-///                         -> a DMA strip-buffer race, not signal integrity
-///   * banding or torn rows -> clock too high for the FPC
-/// It also renders the rounded corners unmistakable, so the corner radius can
-/// be measured straight off a photograph.
-void drawCheckerboard(onebit::IFramebuffer& fb) {
-    for (int16_t y = 0; y < fb.height(); ++y) {
-        for (int16_t x = 0; x < fb.width(); ++x) {
-            fb.setPixel(x, y, ((x ^ y) & 1) ? BLACK : WHITE);
-        }
-    }
-}
-
-/// Layout reference: safe area, corner clipping, and text at three sizes.
-void drawLayoutPage(onebit::IFramebuffer& fb, float volts) {
-    fb.clear(WHITE);
-
-    const int16_t w = fb.width();
-    const int16_t h = fb.height();
-
-    // A 1 px full-perimeter frame. Its corners are the clipping evidence: the
-    // straight runs should be visible and the corners should vanish.
-    onebit::drawRect(fb, 0, 0, w, h, BLACK);
-
-    // The safe rectangle. A 44 px quarter-circle needs 44 - 44/sqrt(2) ~= 12.9 px
-    // of diagonal clearance, so a 16 px inset clears it with margin.
-    constexpr int16_t kInset = 16;
-    onebit::drawRect(fb, kInset, kInset, w - 2 * kInset, h - 2 * kInset, BLACK);
-
-    // Big vector digits -- the countdown is the most important element in this
-    // UI, so prove the largest text works before anything else is designed.
-    onebit::renderString(fb, "12:00", 26, 40, 34, 52, 6, 4, BLACK);
-
-    onebit::drawLine(fb, kInset, 108, w - kInset, 108, BLACK);
-
-    onebit::drawBitmapText(fb, onebit::fonts::TERM_8X12, kInset + 4, 120,
-                           "h0urg1ass M1", BLACK);
-    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, kInset + 4, 138,
-                           "ST7789V2 240x280", BLACK);
+/// The raw numbers are the point. Holding the board in each known posture and
+/// reading which component goes to +-1 is the only way to establish the axis
+/// mapping, because it depends on how the part is rotated on the PCB.
+void drawDebug(onebit::IFramebuffer& fb, const h0::Vec3& raw, h0::Orientation o,
+               const char* lastEvent) {
+    constexpr int16_t y0 = 236;
+    onebit::fillRect(fb, 0, y0, 240, 44, WHITE);
+    onebit::drawLine(fb, 20, y0, 220, y0, BLACK);
 
     char line[40];
-    std::snprintf(line, sizeof(line), "battery %.2f V", static_cast<double>(volts));
-    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, kInset + 4, 152, line, BLACK);
+    std::snprintf(line, sizeof(line), "%-8s %s", orientationName(o), lastEvent);
+    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, 26, y0 + 6, line, BLACK);
 
-    // Solid and outline circles: fill correctness and midpoint symmetry.
-    onebit::fillCircle(fb, 78, 205, 30, BLACK);
-    onebit::drawCircle(fb, 162, 205, 30, BLACK);
-
-    // A grey wedge by dither, to show tone without a grey level.
-    for (int16_t y = 240; y < 262; ++y) {
-        for (int16_t x = kInset; x < w - kInset; ++x) {
-            if (((x + y) & 3) == 0) fb.setPixel(x, y, BLACK);
-        }
-    }
+    std::snprintf(line, sizeof(line), "%+.2f %+.2f %+.2f", static_cast<double>(raw.x),
+                  static_cast<double>(raw.y), static_cast<double>(raw.z));
+    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, 26, y0 + 18, line, BLACK);
 }
 
 } // namespace
@@ -268,166 +172,104 @@ int main() {
 
     stdio_init_all();
 
-    // Idle before touching hardware. If the app hangs past this point USB is
-    // already up, so picotool can still force a reboot into BOOTSEL and
-    // reflashing never needs the BOOT button.
+    // Idle before touching hardware. If the app hangs past here USB is already
+    // up, so picotool can still force BOOTSEL and reflashing needs no button.
     sleep_ms(3000);
 
-    printf("\n=== h0urg1ass M1 -- first light ===\n");
-    reportChip();
+    printf("\n=== h0urg1ass -- interactive ===\n");
+    printf("clk_sys=%lu clk_peri=%lu\n", static_cast<unsigned long>(clock_get_hz(clk_sys)),
+           static_cast<unsigned long>(clock_get_hz(clk_peri)));
 
-    initBuzzer();
     initI2c();
     resetTouch();
     initBattery();
 
-    const int devices = scanI2c();
-    printf("%d i2c device(s); battery %.2f V\n", devices,
-           static_cast<double>(readBatteryVolts()));
+    static board::Buzzer buzzer;
+    buzzer.begin();
 
-    // ------------------------------------------------------------ display --
+    static board::Qmi8658 imu;
+    const bool imuOk = imu.begin();
+    printf("IMU %s", imuOk ? "ok" : "NOT FOUND");
+    if (imuOk) printf(" @0x%02X rev 0x%02X", imu.address(), imu.revision());
+    printf("\nbattery %.2f V\n", static_cast<double>(readBatteryVolts()));
+
     static board::St7789_1in69 lcd;
     if (!lcd.init()) {
-        printf("FATAL: display init failed (strip alloc)\n");
-        beep(600);
+        printf("FATAL: display init failed\n");
         while (true) tight_loop_contents();
     }
-    printf("SPI requested 62.50 MHz, achieved %.2f MHz\n",
-           lcd.actualBaud() / 1e6);
-    printf("panel %dx%d, strip %u B x2\n", lcd.width(), lcd.height(),
-           static_cast<unsigned>(lcd.stripBytes()));
+    printf("SPI %.2f MHz\n", lcd.actualBaud() / 1e6);
 
     static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
-    if (!fb.isValid()) {
-        printf("FATAL: framebuffer alloc failed\n");
-        beep(600);
-        while (true) tight_loop_contents();
-    }
-    printf("framebuffer %u B\n", static_cast<unsigned>(fb.bufferSize()));
-
+    static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
     lcd.clear(WHITE);
     lcd.setBacklight(200);
 
-    // 1 -- the canary.
-    printf("\ncheckerboard canary (8 s) -- look for an even grey field\n");
-    drawCheckerboard(fb);
-    absolute_time_t t0 = get_absolute_time();
-    lcd.push(fb);
-    lcd.waitIdle();
-    const int64_t checkerUs = absolute_time_diff_us(t0, get_absolute_time());
-    printf("  full frame %lld us\n", static_cast<long long>(checkerUs));
-    sleep_ms(8000);
+    static h0::DigitsFace digits;
+    static h0::HourglassFace hourglass;
+    static h0::SplitFlapFace splitflap;
 
-    // 2 -- the layout page.
-    drawLayoutPage(fb, readBatteryVolts());
-    t0 = get_absolute_time();
-    lcd.push(fb);
-    lcd.waitIdle();
-    const int64_t fullUs = absolute_time_diff_us(t0, get_absolute_time());
+    static h0::App app;
+    static h0::OrientationTracker orient;
+    static h0::GravityFilter filter;
 
-    // 3 -- a partial region, the path that actually matters for a timer.
-    const onebit::Rect region{16, 120, 208, 24};
-    t0 = get_absolute_time();
-    lcd.beginFrame();
-    lcd.writeRegion(fb, region);
-    lcd.endFrame();
-    lcd.waitIdle();
-    const int64_t partUs = absolute_time_diff_us(t0, get_absolute_time());
+    // Seed a duration. The dial lands with touch; until then the device starts
+    // with something usable so the gestures can be exercised.
+    app.onMotion(h0::MotionEvent::Settled, time_us_64());
+    app.setDuration(kDefaultDurationUs, time_us_64());
 
-    const double bits = 240.0 * 280.0 * 16.0;
-    printf("\ntiming\n");
-    printf("  full frame   %6lld us   (%.1f fps, %.0f%% of wire limit)\n",
-           static_cast<long long>(fullUs), 1e6 / static_cast<double>(fullUs),
-           100.0 * (bits / lcd.actualBaud()) / (static_cast<double>(fullUs) / 1e6));
-    printf("  208x24 strip %6lld us   (%.1fx cheaper)\n",
-           static_cast<long long>(partUs),
-           static_cast<double>(fullUs) / static_cast<double>(partUs));
-    sleep_ms(1500);
+    printf("\nready -- stand it up to start, lay it flat to pause,\n");
+    printf("turn it over to reset, face down to silence\n\n");
 
-    // ------------------------------------------------------- M3: the timer --
-    //
-    // A real countdown on the digits face. No input yet -- the orientation and
-    // dial work land in later milestones -- so this drives itself through the
-    // whole state machine on a script, which also exercises pause/resume and
-    // expiry without anyone having to sit and watch for two minutes.
-    static h0::DigitsFace face;
-    static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
-    if (!tracker.isValid()) {
-        // Not fatal: an invalid tracker reports the whole frame dirty every
-        // time, which is correct but costs a full 19 ms push per frame.
-        printf("WARN: dirty tracker alloc failed; falling back to full pushes\n");
-    }
-
-    h0::TimerModel timer;
-    timer.setDuration(20ull * 1'000'000ull);
-    timer.start(time_us_64());
-
-    printf("\ncountdown running -- 20 s, scripted pause at 15 s\n");
-    beep(60); sleep_ms(80); beep(60);
-
-    bool scriptedPauseDone = false;
-    bool announcedExpiry = false;
+    const char* lastEvent = "";
     uint32_t frames = 0;
-    int64_t renderAcc = 0, diffAcc = 0, pushAcc = 0;
 
     while (true) {
         const uint64_t now = time_us_64();
-        timer.tick(now);
 
-        // Scripted demonstration of the transitions the IMU will drive later.
-        if (!scriptedPauseDone && timer.remainingSeconds(now) <= 15 && timer.isRunning()) {
-            timer.pause(now);
-            printf("  paused at %lu s\n",
-                   static_cast<unsigned long>(timer.remainingSeconds(now)));
-            sleep_ms(3000);
-            timer.resume(time_us_64());
-            printf("  resumed -- still %lu s, the pause was free\n",
-                   static_cast<unsigned long>(timer.remainingSeconds(time_us_64())));
-            scriptedPauseDone = true;
-            continue;
+        h0::Vec3 raw{};
+        if (imuOk && imu.readRaw(raw)) {
+            const h0::Vec3 g = board::axisMap(raw);
+            const h0::MotionEvent ev = orient.update(filter.push(g), now);
+            if (ev != h0::MotionEvent::None) {
+                const h0::Feedback fbk = app.onMotion(ev, now);
+                if (fbk != h0::Feedback::None) {
+                    buzzer.play(fbk);
+                    lastEvent = feedbackName(fbk);
+                    printf("[%s] -> %s  %lus left\n", orientationName(orient.current()),
+                           lastEvent,
+                           static_cast<unsigned long>(app.timer().remainingSeconds(now)));
+                }
+            }
         }
 
-        if (timer.isExpired() && !announcedExpiry) {
-            printf("  EXPIRED\n");
-            beep(120); sleep_ms(100); beep(120); sleep_ms(100); beep(400);
-            announcedExpiry = true;
+        const h0::Feedback tickFb = app.tick(now);
+        if (tickFb != h0::Feedback::None) {
+            buzzer.play(tickFb);
+            lastEvent = feedbackName(tickFb);
+            printf("-> %s\n", lastEvent);
         }
+        buzzer.update(now);
 
-        const absolute_time_t r0 = get_absolute_time();
-        face.render(fb, timer, now);
-        const int64_t renderUs = absolute_time_diff_us(r0, get_absolute_time());
+        h0::IFace* face = &digits;
+        switch (app.face()) {
+            case h0::FaceId::Hourglass: face = &hourglass; break;
+            case h0::FaceId::SplitFlap: face = &splitflap; break;
+            case h0::FaceId::Digits:    face = &digits; break;
+        }
+        face->render(fb, app.timer(), now);
+        drawDebug(fb, raw, orient.current(), lastEvent);
 
-        // Diffing and pushing are timed separately on purpose. The diff walks
-        // the whole 8,400-byte framebuffer against a shadow every frame whether
-        // anything changed or not, so its cost is a floor that does not go away
-        // when the screen is static -- and it is large enough to be mistaken
-        // for the push if the two are measured together.
-        const absolute_time_t d0 = get_absolute_time();
-        const onebit::DirtyRectList dirty = tracker.update(fb);
-        const int64_t diffUs = absolute_time_diff_us(d0, get_absolute_time());
-
-        // Push only what changed. A full frame costs ~19 ms; the digits change
-        // once a second and occupy a fraction of the panel, so this is the
-        // difference between a timer that idles and one that saturates the bus.
-        const absolute_time_t p0 = get_absolute_time();
-        lcd.pushDirty(fb, dirty);
+        lcd.pushDirty(fb, tracker.update(fb));
         lcd.waitIdle();
-        const int64_t pushUs = absolute_time_diff_us(p0, get_absolute_time());
 
-        renderAcc += renderUs;
-        diffAcc += diffUs;
-        pushAcc += pushUs;
-        if (++frames % 60 == 0) {
-            printf("  %lu frames  render %lld  diff %lld  push %lld us (avg)\n",
-                   static_cast<unsigned long>(frames),
-                   static_cast<long long>(renderAcc / 60),
-                   static_cast<long long>(diffAcc / 60),
-                   static_cast<long long>(pushAcc / 60));
-            renderAcc = diffAcc = pushAcc = 0;
+        if (++frames % 200 == 0) {
+            printf("  %s  raw %+.2f %+.2f %+.2f  %lus\n", orientationName(orient.current()),
+                   static_cast<double>(raw.x), static_cast<double>(raw.y),
+                   static_cast<double>(raw.z),
+                   static_cast<unsigned long>(app.timer().remainingSeconds(now)));
         }
 
-        // ~20 Hz. The face only changes once a second, so most of these frames
-        // find nothing dirty and cost almost nothing to push.
-        sleep_ms(50);
+        sleep_ms(25); // ~40 Hz, comfortably above the 125 Hz IMU rate we need
     }
 }
