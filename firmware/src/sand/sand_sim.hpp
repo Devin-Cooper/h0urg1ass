@@ -15,6 +15,17 @@ namespace h0 {
 /// offsets that can jump the geometry.
 enum class Gravity : uint8_t { S, SW, W, NW, N, NE, E, SE };
 
+/// The three offsets a grain tries under a given gravity: straight ahead, then
+/// the two diagonals. Data rather than branches, so the inner loop never asks
+/// which way is down.
+struct GravityOffsets {
+    int8_t mx, my;   ///< straight ahead
+    int8_t lx, ly;   ///< first diagonal
+    int8_t rx, ry;   ///< second diagonal
+};
+
+GravityOffsets offsetsFor(Gravity g);
+
 /// Falling-sand cellular automaton.
 ///
 /// In place, never double-buffered. Double buffering is the intuitive choice and
@@ -32,6 +43,17 @@ public:
     SandGrid& sand() { return sand_; }
     const SandGrid& sand() const { return sand_; }
     const SandGrid& walls() const { return walls_; }
+
+    /// The live wall grid, for a caller that needs to change a few cells every
+    /// tick rather than swap the whole thing. The gate uses this: rewriting five
+    /// hole cells beats copying 1,984 bytes, and it is what lets each cell of
+    /// the aperture decide independently.
+    SandGrid& wallsMut() { return walls_; }
+
+    /// Top speed of a grain in free fall, in cells per tick. Zero disables the
+    /// ballistic pass entirely and restores the original one-cell-per-tick
+    /// behaviour, which is what the conservation tests compare against.
+    void setMaxFallSpeed(int v) { vmax_ = static_cast<int8_t>(v); }
 
     /// Advance one tick under `g`.
     ///
@@ -61,6 +83,27 @@ private:
     bool blocked(int x, int y) const { return walls_.get(x, y) || sand_.get(x, y); }
     bool tryMove(int x, int y, int nx, int ny);
 
+    /// A grain in free fall, and how fast it is going.
+    ///
+    /// Velocity lives in a list of the AIRBORNE grains rather than a plane
+    /// parallel to the grid, because almost nothing is airborne: measured, a
+    /// mean of 1.18 and a peak of 5 in steady state on a 900-grain drain. A
+    /// 2-bit plane would spend 3 kB to store "zero" for 99.99% of the vessel.
+    struct Faller {
+        uint8_t x, y, v;
+    };
+
+    /// Three times the measured peak. Overflow is graceful -- a grain that finds
+    /// no slot simply falls at one cell per tick, as it always did.
+    static constexpr int kMaxFallers = 16;
+
+    int stepFallers(const GravityOffsets& o);
+    void recruit(int x, int y, const GravityOffsets& o);
+
+    Faller fall_[kMaxFallers];
+    int nfall_ = 0;
+    int8_t vmax_ = 0;
+
     SandGrid sand_;
     SandGrid walls_;
 
@@ -81,16 +124,7 @@ private:
     uint32_t prng_ = 1;
 };
 
-/// The three offsets a grain tries under a given gravity: straight ahead, then
-/// the two diagonals. Data rather than branches, so the inner loop never asks
-/// which way is down.
-struct GravityOffsets {
-    int8_t mx, my;   ///< straight ahead
-    int8_t lx, ly;   ///< first diagonal
-    int8_t rx, ry;   ///< second diagonal
-};
 
-GravityOffsets offsetsFor(Gravity g);
 
 /// True when the scan must run in decreasing order on that axis.
 ///

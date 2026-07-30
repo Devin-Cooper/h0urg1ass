@@ -8,6 +8,8 @@
 
 #include "faces/timer_face.hpp"
 #include "render/raster_ops.hpp"
+#include "sand/agitation.hpp"
+#include "sand/sand_sim.hpp"
 #include "sand/sand_render.hpp"
 #include "sand/sand_vessel.hpp"
 #include "timer/timer_model.hpp"
@@ -552,4 +554,196 @@ TEST_CASE("the timer face golden across states") {
     t.tick(200 * SEC);
     REQUIRE(t.isExpired());
     checkGolden((face.render(fb, t, 200 * SEC), fb), "timer@expired");
+}
+
+// ------------------------------------------------------ the drain, metered --
+
+TEST_CASE("the sand leaves one grain at a time, not in bars") {
+    // The aperture is five cells wide, and the old gate opened all five together
+    // so the whole width discharged in a single tick: measured, 381 of 429 flow
+    // events were exactly five grains, and at 30 minutes that was one bar every
+    // 4.2 seconds with nothing in between.
+    //
+    // The cause was not that the gate was binary -- it was that the five cells
+    // were perfectly CORRELATED. A per-cell accumulator started in phase
+    // reproduces the bar exactly; staggering the phases is the whole fix.
+    for (int seconds : {300, 1800}) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(1234u, 2000);
+        const int total = seconds * 30;
+        int prev = 0, events = 0, fullWidth = 0, dry = 0, dryMax = 0;
+        for (int i = 0; i < total; ++i) {
+            v.tick(1.0f - static_cast<float>(i) / static_cast<float>(total));
+            const int low = v.lowerCount();
+            const int d = low - prev;
+            prev = low;
+            if (d > 0) {
+                ++events;
+                if (d >= 2 * h0::SandVessel::kHoleHalf + 1) ++fullWidth;
+                dry = 0;
+            } else if (++dry > dryMax) {
+                dryMax = dry;
+            }
+        }
+        CAPTURE(seconds);
+        CHECK(events > 1000);
+        CHECK(fullWidth == 0);      // was 89% of events
+        CHECK(dryMax < 60);         // under two seconds; was 134 ticks at 1800 s
+    }
+}
+
+TEST_CASE("metering the drain one grain at a time still keeps time") {
+    // A prettier stream that no longer tracks the clock would be a failure. The
+    // gate is proportional on a cumulative count, so the error is bounded by how
+    // far behind schedule the sand is allowed to get.
+    h0::SandVessel v;
+    v.begin();
+    v.reset(99u, 2000);
+    const int total = 300 * 30;
+    float worst = 0.0f;
+    for (int i = 0; i < total; ++i) {
+        const float frac = 1.0f - static_cast<float>(i) / static_cast<float>(total);
+        v.tick(frac);
+        const float want = (1.0f - frac) * static_cast<float>(v.charge());
+        const float err = (static_cast<float>(v.lowerCount()) - want) /
+                          static_cast<float>(v.charge());
+        const float mag = err < 0 ? -err : err;
+        if (mag > worst) worst = mag;
+    }
+    CHECK(worst < 0.02f); // measured 0.34%
+}
+
+TEST_CASE("a falling grain accelerates instead of crawling") {
+    // Every grain used to move exactly one cell per tick -- terminal velocity
+    // from the instant it was released, which is why the stream read like syrup.
+    auto dropTicks = [](int vmax) {
+        h0::SandSim sim;
+        sim.setWalls(h0::makeVessel(h0::SandVessel::kHoleHalf));
+        sim.seed(1u);
+        sim.setMaxFallSpeed(vmax);
+        const int x = h0::sandgeom::HOLE_CX;
+        sim.sand().set(x, h0::sandgeom::FLOOR_ROW + 1, true);
+        int ticks = 0;
+        while (ticks < 400 && sim.step(h0::Gravity::S) != 0) ++ticks;
+        return ticks;
+    };
+    const int slow = dropTicks(0);
+    const int fast = dropTicks(h0::SandVessel::kMaxFallSpeed);
+    CHECK(slow > 50);          // one cell per tick over the lower chamber
+    CHECK(fast * 3 < slow);    // measured 59 -> 17 ticks, 1.97 s -> 0.57 s
+}
+
+TEST_CASE("acceleration never costs or creates a grain") {
+    // The ballistic pass moves grains outside the cellular scan, so it is the
+    // one place that could break the conservation the whole simulation rests on.
+    const h0::Gravity dirs[8] = {h0::Gravity::S,  h0::Gravity::SW, h0::Gravity::W,
+                                 h0::Gravity::NW, h0::Gravity::N,  h0::Gravity::NE,
+                                 h0::Gravity::E,  h0::Gravity::SE};
+    for (int d = 0; d < 8; ++d) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(21u, 900);
+        v.setGravity(dirs[d]);
+        const int charged = v.charge();
+        for (int i = 0; i < 500; ++i) {
+            v.tick(1.0f - static_cast<float>(i) / 500.0f);
+            CAPTURE(d);
+            CAPTURE(i);
+            REQUIRE(v.sand().count() == charged);
+        }
+    }
+}
+
+// ---------------------------------------------------------- the agitation --
+
+TEST_CASE("the sand goes completely dead when the device is put down") {
+    // The whole point of gating drift on jerk rather than tilt angle. A device
+    // resting at an angle reads the same as one being tipped, so an angle-gated
+    // drift would creep forever on a desk.
+    h0::Agitation a;
+    const h0::Vec3 tilted{0.17f, 0.98f, 0.0f}; // about 10 degrees, held still
+    for (int i = 0; i < 200; ++i) a.update(tilted);
+    // Exactly zero, not merely small: an asymptote leaves a drift probability
+    // that never quite reaches zero, and the sand shimmers indefinitely.
+    CHECK(a.value() == 0.0f);
+}
+
+TEST_CASE("a shake settles within about a second") {
+    h0::Agitation a;
+    for (int i = 0; i < 60; ++i) {
+        a.update(h0::Vec3{(i & 1) ? 0.6f : -0.6f, 0.8f, 0.0f});
+    }
+    CHECK(a.value() > 0.9f);
+
+    const h0::Vec3 still{0.0f, 1.0f, 0.0f};
+    int ticks = 0;
+    while (a.value() > 0.0f && ticks < 300) { a.update(still); ++ticks; }
+    CHECK(ticks > 20);  // not instant -- it should read as settling
+    CHECK(ticks < 45);  // measured 33 ticks, 1.10 s
+}
+
+TEST_CASE("desk vibration does not wake the sand, but a deliberate tilt does") {
+    // These two are close in raw jerk magnitude -- measured 0.016 against 0.0175
+    // g per sample -- so amplitude alone cannot separate them. What does is
+    // DIRECTION: a vibration's jerk alternates and cancels when the vector is
+    // low-passed, while a tilt's points one way. Filtering |jerk| keeps both.
+    h0::Agitation buzz;
+    for (int i = 0; i < 300; ++i) {
+        buzz.update(h0::Vec3{(i & 1) ? 0.008f : -0.008f, 1.0f, 0.0f});
+    }
+    CHECK(buzz.value() == 0.0f);
+
+    h0::Agitation tilt;
+    for (int i = 0; i < 60; ++i) {
+        const float r = static_cast<float>(i) * 0.5f * 3.14159265f / 180.0f;
+        tilt.update(h0::Vec3{std::sin(r), std::cos(r), 0.0f}); // 15 deg/s
+    }
+    CHECK(tilt.value() > 0.1f);
+}
+
+TEST_CASE("a small tilt moves sand only while the device is being handled") {
+    // The dead zone this exists to kill: gravity is quantised to eight
+    // directions, so anywhere below 22.5 degrees the simulation was handed an
+    // identical vector and could not respond at all, however far it was tilted.
+    //
+    // Measures how far the settled pile shifts downhill. Drift only moves
+    // surface grains -- a buried one is under load -- so the shift is a change
+    // in the surface, not a relocation of the bulk.
+    auto shift = [](float agitation, float gx, float gy) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(4u, 900);
+        v.setGravity(h0::Gravity::S);
+        for (int i = 0; i < 200; ++i) v.tick(1.0f); // let the charge collapse
+
+        auto bias = [&v]() {
+            int left = 0, right = 0;
+            for (int y = 1; y < h0::sandgeom::FLOOR_ROW; ++y)
+                for (int x = 1; x < h0::SandGrid::W - 1; ++x)
+                    if (v.sand().get(x, y)) (x < h0::sandgeom::HOLE_CX ? left : right) += 1;
+            return right - left;
+        };
+        const int before = bias();
+        for (int i = 0; i < 200; ++i) {
+            v.setTilt(gx, gy, agitation);
+            v.tick(1.0f);
+        }
+        return bias() - before;
+    };
+
+    // Sitting on a desk at 15 degrees: not one grain moves sideways. This is the
+    // property the whole agitation gate exists for -- an angle-gated drift would
+    // creep for as long as the device sat there.
+    CHECK(shift(0.0f, 0.2588f, 0.9659f) == 0);
+
+    // In the hand, a continuous ramp with angle where there used to be nothing
+    // at all below 22.5 degrees. Measured: +4 at 5 degrees, +26 at 15, +34 at 20.
+    const int at5 = shift(1.0f, 0.0872f, 0.9962f);
+    const int at15 = shift(1.0f, 0.2588f, 0.9659f);
+    const int at20 = shift(1.0f, 0.3420f, 0.9397f);
+    CHECK(at5 > 0);
+    CHECK(at15 > at5);
+    CHECK(at20 > at15);
+    CHECK(at15 > 15);
 }

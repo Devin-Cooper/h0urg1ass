@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "faces/layout.hpp"
+#include "sand/agitation.hpp"
 #include "sand/sand_vessel.hpp"
 #include "timer/timer_model.hpp"
 
@@ -50,7 +51,20 @@ public:
     /// Recharge and restart the drain.
     void restart(const TimerModel& t, uint32_t seed);
 
+    /// Feed the filtered accelerometer vector, in PANEL axes, once per tick.
+    ///
+    /// Takes the vector rather than a direction so the sub-sector remainder
+    /// survives, and derives its own agitation so the sand's responsiveness is
+    /// gated on the device being HANDLED rather than merely being at an angle.
+    void setTilt(const Vec3& g) {
+        agitation_.update(g);
+        vessel_.setTilt(g.x, g.y, agitation_.value());
+    }
+
+    /// Direct control, for tests and callers with no accelerometer.
     void setGravity(Gravity g) { vessel_.setGravity(g); }
+
+    float agitation() const { return agitation_.value(); }
 
     /// Character currently shown in cell `col`, indexed across the whole MM:SS
     /// readout. Exposed so a test can assert the board actually reaches its
@@ -71,6 +85,7 @@ public:
 
 private:
     SandVessel vessel_;
+    Agitation agitation_;
 
     // Two independent two-cell units with a painted separator between them,
     // rather than one five-cell board. A flap sequence is a cycle, so a colon
