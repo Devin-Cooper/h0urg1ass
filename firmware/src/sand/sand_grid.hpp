@@ -12,12 +12,17 @@ namespace h0 {
 /// 8 kB, so the memory discussion that usually dominates falling-sand designs
 /// simply does not arise here.
 ///
-/// Row-major with x packed into words, deliberately: it is the layout that lets
-/// a fall step be computed a whole word at a time (`canFall = row & ~rowBelow`)
-/// rather than cell by cell. Bit-packing addressed one cell at a time is
-/// actually *slower* than a byte per cell -- measured, and the RP2350 has no
-/// data cache to make up the difference -- so the packing only earns its place
-/// combined with word-wide operations.
+/// Row-major with x packed into words. That layout WOULD allow a fall step to
+/// be computed a whole word at a time (`canFall = row & ~rowBelow`), and the
+/// simulation does not currently do that -- it addresses one cell at a time,
+/// which on its own is slightly slower than a byte per cell, and the RP2350 has
+/// no data cache to make up the difference.
+///
+/// The packing earns its place here for a different reason: the framebuffer
+/// uses the same MSB-first row-major packing, so a row of cells expands to
+/// pixels with a byte-wide table lookup instead of four `setPixel` calls per
+/// grain. If the per-tick cost ever matters, the word-parallel fall step is the
+/// optimisation this layout is already set up for.
 class SandGrid {
 public:
     static constexpr int W = 104;

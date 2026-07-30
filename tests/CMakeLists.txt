@@ -79,5 +79,15 @@ if(NOT MSVC)
     target_compile_options(sand_proto PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# Throwaway measuring instrument: finds the constants -- hole width, fill depth,
+# tick rate, attractor probability -- that let the falling-sand vessel hit real
+# timer durations. Prints numbers, ships nothing, and is expected to be deleted
+# once those constants are pinned.
+add_executable(sand_tune proto/sand_tune.cpp)
+target_link_libraries(sand_tune PRIVATE h0_input)
+if(NOT MSVC)
+    target_compile_options(sand_tune PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 enable_testing()
 add_test(NAME unit COMMAND h0urg1ass_tests)

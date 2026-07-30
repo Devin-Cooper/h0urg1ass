@@ -36,6 +36,7 @@ add_executable(h0urg1ass
     src/app/app.cpp
     src/input/drag_column.cpp
     src/sand/sand_sim.cpp
+    src/sand/sand_render.cpp
     ${ONEBIT_SOURCES}
 )
 

@@ -152,6 +152,84 @@ TEST_CASE("the teleport bug does not reappear when gravity points sideways") {
     CHECK(s.sand().count() == start);
 }
 
+TEST_CASE("no grain moves more than one cell, under any gravity, with the diagonals forced") {
+    // The test the suite was missing. The two teleport tests launch a grain into
+    // EMPTY space, so the straight-ahead branch always succeeds and the diagonal
+    // branch never runs -- and it is the diagonals that move on the axis the
+    // outer loop iterates. Under E/W gravity a grain slid into a row not yet
+    // visited, was visited again, and slid again: measured at up to 51 cells in
+    // one tick.
+    //
+    // So this packs the vessel densely enough that grains are constantly
+    // blocked ahead and forced onto their diagonals, then checks every grain's
+    // displacement between consecutive ticks.
+    const Gravity all[] = {Gravity::S,  Gravity::SW, Gravity::W,  Gravity::NW,
+                           Gravity::N,  Gravity::NE, Gravity::E,  Gravity::SE};
+    for (Gravity g : all) {
+        SandSim s;
+        s.setWalls(vessel());
+        s.seed(31337);
+        charge(s, 30);
+
+        // Bounding box, not per-cell provenance. Grains CHAIN -- A vacates a
+        // cell and B moves into it in the same tick -- so "the source cell must
+        // now be empty" is not a real invariant and produces false failures.
+        // The extent of the sand, however, can only grow by one cell per tick
+        // in any direction, and a 51-cell jump breaks that unmissably.
+        auto bounds = [](const SandGrid& gr, int& x0, int& x1, int& y0, int& y1) {
+            x0 = SandGrid::W; x1 = -1; y0 = SandGrid::H; y1 = -1;
+            for (int y = 0; y < SandGrid::H; ++y)
+                for (int x = 0; x < SandGrid::W; ++x)
+                    if (gr.get(x, y)) {
+                        if (x < x0) x0 = x;
+                        if (x > x1) x1 = x;
+                        if (y < y0) y0 = y;
+                        if (y > y1) y1 = y;
+                    }
+        };
+
+        for (int t = 0; t < 60; ++t) {
+            int ax0, ax1, ay0, ay1;
+            bounds(s.sand(), ax0, ax1, ay0, ay1);
+            s.step(g);
+            int bx0, bx1, by0, by1;
+            bounds(s.sand(), bx0, bx1, by0, by1);
+
+            CAPTURE(static_cast<int>(g));
+            CAPTURE(t);
+            CHECK(ax0 - bx0 <= 1);
+            CHECK(bx1 - ax1 <= 1);
+            CHECK(ay0 - by0 <= 1);
+            CHECK(by1 - ay1 <= 1);
+        }
+    }
+}
+
+TEST_CASE("a settled pile is centred, not sheared to one side") {
+    // A fixed scan direction is a systematic shear -- whichever end of a row is
+    // visited first gets to move into the space, every row, every tick. Measured
+    // at a 0.53-0.63 left/right mass split before the scan direction was
+    // randomised: a squeegee rather than a hopper.
+    SandSim s;
+    s.setWalls(vessel());
+    s.seed(4242);
+
+    // Rain a centred column onto the lower floor and let it heap.
+    const int cx = SandGrid::W / 2;
+    for (int y = SandGrid::H / 2 + 2; y < SandGrid::H / 2 + 40; ++y)
+        for (int x = cx - 3; x <= cx + 3; ++x) s.sand().set(x, y, true);
+    settle(s, Gravity::S);
+
+    // Centre of mass must sit near the axis it was poured onto.
+    long sumX = 0, n = 0;
+    for (int y = SandGrid::H / 2; y < SandGrid::H; ++y)
+        for (int x = 0; x < SandGrid::W; ++x)
+            if (s.sand().get(x, y)) { sumX += x; ++n; }
+    REQUIRE(n > 100);
+    const double centroid = static_cast<double>(sumX) / static_cast<double>(n);
+    CHECK(centroid == doctest::Approx(cx).epsilon(0.05));
+}
+
 TEST_CASE("a pile settles rather than churning forever") {
     // If it never reaches zero movement, the caller can never skip work and the
     // battery pays for a picture that is not changing.

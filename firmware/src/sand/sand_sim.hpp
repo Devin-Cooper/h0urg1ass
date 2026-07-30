@@ -35,9 +35,13 @@ public:
 
     /// Advance one tick under `g`.
     ///
-    /// Returns the number of grains that moved, which is what "settled" is
-    /// measured by -- a pile at rest costs almost nothing and lets the caller
-    /// skip work entirely.
+    /// Returns the number of MOVES made, which is how "settled" is detected --
+    /// zero means a fixpoint.
+    ///
+    /// A settled pile is NOT free, though: measured, an empty grid still costs
+    /// about the same as a busy one, because every cell is still visited. If
+    /// that becomes a problem the fix is a per-row occupancy word to skip empty
+    /// rows, which is not implemented.
     int step(Gravity g);
 
     /// Seeded so a run is reproducible: same seed, same drain, which is what
@@ -59,6 +63,21 @@ private:
 
     SandGrid sand_;
     SandGrid walls_;
+
+    /// Cells a grain has already moved INTO this tick.
+    ///
+    /// Scan order alone cannot prevent a grain moving twice. Iterating against
+    /// gravity handles the straight-ahead case, but the diagonals move on the
+    /// *other* axis too -- under E or W gravity a grain slides into a row the
+    /// outer loop has not reached yet, is visited again, and slides again.
+    /// Measured before this existed: up to 51 cells in a single tick.
+    ///
+    /// With the mask, correctness no longer depends on scan order at all, which
+    /// frees the order to be randomised purely to break up bias. The mask also
+    /// pays for itself -- skipping settled cells measured faster than the
+    /// unguarded version, not slower.
+    SandGrid moved_;
+
     uint32_t prng_ = 1;
 };
 
