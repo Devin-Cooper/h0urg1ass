@@ -24,6 +24,7 @@ file(GLOB ONEBIT_SOURCES "${ONEBIT_ROOT}/src/*/*.cpp")
 
 add_executable(h0urg1ass
     src/main.cpp
+    src/board/st7789_1in69.cpp
     ${ONEBIT_SOURCES}
 )
 
