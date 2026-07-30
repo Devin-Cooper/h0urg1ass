@@ -40,3 +40,6 @@ venv/
 # Local, machine-specific overrides -- never committed
 .env
 local.cmake
+
+# Factory image captured off the board; kept locally, not committed.
+firmware/vendor-backup/

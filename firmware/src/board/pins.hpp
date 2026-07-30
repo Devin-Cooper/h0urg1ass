@@ -2,9 +2,18 @@
 
 // Pin map for the Waveshare RP2350-Touch-LCD-1.69.
 //
-// Every assignment here is corroborated by the board schematic and by at least
-// one vendor pin header; the five vendor artifacts agree with each other and
-// with the schematic. See docs/hardware.md for the sourcing and the traps.
+// PROVENANCE. Every GPIO below is corroborated by **nine independent vendor
+// code artifacts** -- the C, Arduino and MicroPython trees of both the basic
+// demo and the LVGL demo, plus the four MicroPython peripheral drivers -- with
+// **zero conflicts** between them. That matters more than the schematic here,
+// because this is code that demonstrably runs on the hardware.
+//
+// The schematic agrees on all of these too. It is, however, independently known
+// to be wrong elsewhere: its IMU block straps SDO/SA0 to GND (which the
+// datasheet says gives 0x6A) when the part actually answers at 0x6B, and it
+// puts that block's VDD/VDDIO on a "1V8" net with no source on a board whose
+// only regulator is 3.3 V. Neither error is a pin assignment, so the map below
+// is unaffected -- but do not treat that drawing as an authority on its own.
 //
 // Do not reuse a config from the RP2350-Touch-LCD-2.8 or -1.28. Different
 // controller, different touch IC, different resolution, different offsets.

@@ -21,7 +21,12 @@ export PICO_SDK_PATH
 
 BUILD_DIR=build
 UF2="$BUILD_DIR/h0urg1ass.uf2"
-BACKUP="$HOME/.claude/docs/h0urg1ass/vendor-firmware-backup.uf2"
+
+# Where --restore looks for the factory image saved off the board before it was
+# first overwritten. Capture one with:
+#     picotool save -p -f vendor-backup/vendor-firmware.uf2
+# Override with H0URG1ASS_BACKUP=/path/to/image.uf2 if you keep it elsewhere.
+BACKUP="${H0URG1ASS_BACKUP:-vendor-backup/vendor-firmware.uf2}"
 
 mode="${1:-}"
 

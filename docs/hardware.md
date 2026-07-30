@@ -49,8 +49,29 @@ overclock the part to 200 MHz against a 150 MHz rating [S6][S9].
 
 ## 2. Complete pin map
 
-Every row is corroborated by the schematic net labels **and** at least one vendor pin header; five
-independent vendor artifacts agree with each other and with the schematic [S3][S4][S6][S7].
+**Confidence: high, and independent of the schematic.** Every GPIO below was re-derived on
+2026-07-29 by extracting the pin constants from **nine vendor code artifacts** and diffing them
+against each other:
+
+| Source | Tree |
+|---|---|
+| `C/lib/Config/DEV_Config.h` | basic demo **and** LVGL demo |
+| `Arduino/…/DEV_Config.h` | basic demo **and** LVGL demo |
+| MicroPython top-level pin block | basic demo |
+| MicroPython drivers | `LCD_1in69.py`, `CST816T.py`, `QMI8658.py`, `PCF85063A.py` |
+
+**There are zero conflicts between them.** Every pin that appears in more than one source has the
+same value in all of them, and all of them agree with the schematic's net labels. This is stronger
+evidence than the drawing on its own, because it is code that demonstrably runs on the hardware.
+
+That distinction matters here, because the schematic is independently known to be wrong in its IMU
+block — the SDO/SA0 strap and a phantom `1V8` supply net (see *Confirmed on hardware*). **Neither
+error is a pin assignment**, so this table is unaffected. Six of these pins have additionally been
+exercised on the bench: SDA/SCL, TP_RST, the three I²C devices they reach, and BAT_ADC.
+
+The two peripheral groups that appear *only* in the LVGL trees (IMU interrupts, RTC interrupt,
+buzzer, power latch, power key, battery ADC) are corroborated by two artifacts each — the LVGL C
+and LVGL Arduino headers — plus the schematic. The basic demo simply does not drive those parts.
 
 | Function | GPIO | Direction / mode | Notes |
 |---|---|---|---|
