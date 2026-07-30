@@ -62,8 +62,18 @@ constexpr uint32_t kSysClockKhz = 125'000;
 /// the tap gives a real RC, and an unsettled read is low by up to 40%.
 constexpr uint32_t kBatterySettleMs = 50;
 
-/// The duration the device starts with, until touch lands.
+/// The duration the device starts with.
 constexpr uint64_t kDefaultDurationUs = 2ull * 60ull * 1'000'000ull;
+
+/// Backlight levels and the idle timeout.
+///
+/// The backlight is roughly 70% of active draw -- about 40 mA at full against
+/// ~16 mA for everything else -- so how long it stays bright is the single
+/// biggest lever on battery life, worth more than every other optimisation
+/// combined. Dimming rather than blanking keeps the timer glanceable.
+constexpr uint8_t kBacklightActive = 200;
+constexpr uint8_t kBacklightIdle = 36;
+constexpr uint64_t kIdleAfterUs = 20ull * 1'000'000ull;
 
 /// Hold the soft power latch. GPIO15 -> R3 1k -> T1 base; T1's collector pulls
 /// Q3's gate down, passing the battery through. Until this runs, the board is
@@ -199,27 +209,6 @@ const char* feedbackName(h0::Feedback f) {
     return "";
 }
 
-/// Bottom strip: raw IMU vector, mapped posture, last event.
-///
-/// The raw numbers are the point. Holding the board in each known posture and
-/// reading which component goes to +-1 is the only way to establish the axis
-/// mapping, because it depends on how the part is rotated on the PCB.
-void drawDebug(onebit::IFramebuffer& fb, const h0::Vec3& raw, h0::Orientation o,
-               const char* lastEvent, bool touching) {
-    constexpr int16_t y0 = 236;
-    onebit::fillRect(fb, 0, y0, 240, 44, WHITE);
-    onebit::drawLine(fb, 20, y0, 220, y0, BLACK);
-
-    char line[40];
-    std::snprintf(line, sizeof(line), "%-8s %s", orientationName(o), lastEvent);
-    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, 26, y0 + 6, line, BLACK);
-
-    std::snprintf(line, sizeof(line), "%+.2f %+.2f %+.2f%s", static_cast<double>(raw.x),
-                  static_cast<double>(raw.y), static_cast<double>(raw.z),
-                  touching ? "  T" : "");
-    onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, 26, y0 + 18, line, BLACK);
-}
-
 } // namespace
 
 int main() {
@@ -271,7 +260,7 @@ int main() {
     static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
     static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
     lcd.clear(WHITE);
-    lcd.setBacklight(200);
+    lcd.setBacklight(kBacklightActive);
 
     static h0::DigitsFace digits;
     static h0::HourglassFace hourglass;
@@ -288,11 +277,13 @@ int main() {
 
     printf("\nready -- stand it up to start, lay it flat to pause,\n");
     printf("turn it over to reset, face down to silence.\n");
-    printf("while flat, drag around the face to set the time\n");
-    printf("  (outer ring = minutes, inner = 5-second steps)\n\n");
+    printf("while flat, drag the MIN / SEC columns to set the time.\n");
+    printf("swipe left or right to change face\n\n");
 
-    const char* lastEvent = "";
     uint32_t frames = 0;
+    uint64_t faceShownUntil = 0;
+    uint64_t lastInteractionUs = 0;
+    uint8_t backlight = kBacklightActive;
     uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
     uint64_t lastTouchUs = 0;
     bool touchActive = false;
@@ -314,11 +305,11 @@ int main() {
             const h0::MotionEvent ev = orient.update(filter.push(g), now);
             if (ev != h0::MotionEvent::None) {
                 const h0::Feedback fbk = app.onMotion(ev, now);
+                lastInteractionUs = now;
                 if (fbk != h0::Feedback::None) {
                     buzzer.play(fbk);
-                    lastEvent = feedbackName(fbk);
                     printf("[%s] -> %s  %lus left\n", orientationName(orient.current()),
-                           lastEvent,
+                           feedbackName(fbk),
                            static_cast<unsigned long>(app.timer().remainingSeconds(now)));
                 }
             }
@@ -346,6 +337,7 @@ int main() {
             if (touchRead && tp.pressed) {
                 touchActive = true;
                 lastTouchUs = now;
+                lastInteractionUs = now;
             } else if (touchRead && !tp.pressed) {
                 touchActive = false;
                 lastTouchUs = 0;
@@ -372,7 +364,18 @@ int main() {
             touchRead = true; // deliver the release
         }
         if (touchRead) {
-            if (app.settingPosture()) {
+            // A horizontal swipe cycles the face. The controller detects it
+            // itself, and it cannot be confused with a column drag because the
+            // columns only ever consume vertical movement.
+            if (tp.gesture == board::TouchGesture::SlideLeft ||
+                tp.gesture == board::TouchGesture::SlideRight) {
+                app.cycleFace();
+                buzzer.play(h0::Feedback::Resumed);
+                faceShownUntil = now + 1'200'000ull;
+                colMin.reset();
+                colSec.reset();
+                activeCol = 0;
+            } else if (app.settingPosture()) {
                 // Lock the column on touch-down. A finger drifts sideways during
                 // a vertical drag, and switching wheels mid-gesture would move
                 // whichever one it wandered over.
@@ -410,8 +413,7 @@ int main() {
         const h0::Feedback tickFb = app.tick(now);
         if (tickFb != h0::Feedback::None) {
             buzzer.play(tickFb);
-            lastEvent = feedbackName(tickFb);
-            printf("-> %s\n", lastEvent);
+            printf("-> %s\n", feedbackName(tickFb));
         }
         buzzer.update(now);
 
@@ -436,8 +438,27 @@ int main() {
                 case h0::FaceId::Digits:    face = &digits; break;
             }
             face->render(fb, app.timer(), now);
+            if (now < faceShownUntil) {
+                // Name it briefly after a change. Three faces with no label
+                // would leave the swipe feeling like it did something random.
+                const char* n = face->name();
+                const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, n);
+                onebit::fillRect(fb, static_cast<int16_t>(120 - w / 2 - 4), 244,
+                                 static_cast<int16_t>(w + 8), 13, WHITE);
+                onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
+                                       static_cast<int16_t>(120 - w / 2), 246, n, BLACK);
+            }
         }
-        drawDebug(fb, raw, orient.current(), lastEvent, tp.pressed);
+
+        // A ringing alarm always goes to full brightness: it is the one moment
+        // the device is trying to get attention from across a room.
+        const bool idle = (now - lastInteractionUs) > kIdleAfterUs;
+        const uint8_t want = (app.alarmSounding() || !idle) ? kBacklightActive
+                                                            : kBacklightIdle;
+        if (want != backlight) {
+            backlight = want;
+            lcd.setBacklight(backlight);
+        }
 
         lcd.pushDirty(fb, tracker.update(fb));
         lcd.waitIdle();
