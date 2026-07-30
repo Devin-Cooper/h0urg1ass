@@ -92,13 +92,32 @@ Two consequences worth internalising:
 
 ## 3. Power path
 
-### Disputed: the power path
+### The power path — settled
 
-Two readings of this board's power topology are in circulation. They differ on three points, and
-**neither is settled**. Both are stated in full below, followed by the firmware consequence they
-share and the measurements that would decide between them.
+Two readings of this board's power topology were in circulation, differing on three points.
+**Reading B is correct.** Every one of its claims was verified on 2026-07-29 by rendering the
+board schematic PDF (`RP2350-Touch-LCD-1.69.pdf`, md5 `905f980ed9df9692c25f705c49573984`) at
+600 dpi and reading each block directly:
 
-**Reading A — the commonly-documented description.**
+* **U1 pin 3 (EN) visibly ties back to the VIN/VSYS node.** The LDO self-enables. GPIO15 does not
+  reach it.
+* **The net-alias table on the sheet states it outright: `SYS_OUT` = GPIO14, `SYS_EN` = GPIO15.**
+  SYS_EN runs through R3 1 kΩ to the base of T1 (SS8050), R4 10 kΩ base-to-ground; T1's collector
+  holds Q3's gate. Key1 pulls the same node down through D1. GPIO14 is the button *sense*, held up
+  by R8 10 kΩ to 3V3 and dragged low through D2.
+* **The R11/R12 divider is hard-wired from B+ to GND with no FET in the path.**
+* **D4 (MBR230LSFT1G) is drawn with its anode on VBUS and cathode on VSYS.**
+
+Reading A is wrong on all three counts and should not be propagated. Both readings are retained
+below because Reading A appears in circulated documentation for this board, and knowing which
+claim is the wrong one is more useful than silently deleting it.
+
+An independent confirmation arrived from the bench. Reading B has C10/C12 (100 nF) on the
+divider tap, which against the divider's 67 kΩ predicts an RC of ~6.7 ms — so ~45 ms should reach
+about 99.9%. The measured settling curve hit 3.997 V of a settled 4.001 V at ~45 ms. The
+schematic predicts the number the board produces.
+
+**Reading A — the commonly-documented description. Now known to be incorrect.**
 
 1. The RT9193-33PB 3.3 V LDO (U1) has its **EN pin driven by the SYS_EN net, i.e. GPIO15**.
    Firmware holding GPIO15 high is what keeps the LDO enabled; dropping it disables the regulator
@@ -166,11 +185,11 @@ Topology as drawn under reading B:
                                            3V3  →  RP2350, LCD, touch, IMU, RTC, flash
 ```
 
-**Argument advanced for reading B, recorded but not decisive:** under reading A the board could
+**Argument advanced for reading B, and since confirmed:** under reading A the board could
 never cold-boot on battery, because GPIO15 is an output of a chip that only has power once the
-LDO is enabled. Something other than a GPIO must therefore start the rail. That is an argument
-from internal consistency, not a measurement, and reading A could still be recovered if some
-other element (a button path directly into EN, for instance) were present and unrecorded.
+LDO is enabled. Something other than a GPIO must therefore start the rail. That was an argument
+from internal consistency rather than a measurement — and the schematic shows exactly the missing
+element it predicted: Key1 pulling Q3's gate down through D1, entirely independent of any GPIO.
 
 **The firmware consequence is identical under both readings.** GPIO15 must be driven high as the
 literal first statement of `main()` — before `stdio_init_all()`, before the startup idle, before
@@ -200,24 +219,21 @@ There is real margin (10–20 ms of boot against a 100–300 ms human press, bot
 margin evaporates the moment a slow init is added ahead of the latch, and the failure is
 invisible over USB.
 
-**What to measure to settle it.** Each of these is a single bench measurement:
+**Consequences now that reading B is established.** These follow from the topology and do not
+need re-litigating, though the two current figures remain calculated rather than metered:
 
-1. **LDO enable source.** On battery, no USB, board running: meter U1 pin 3 (EN) against VSYS and
-   against the GPIO15 pad. EN sitting at VSYS while GPIO15 is low ⇒ reading B. EN following
-   GPIO15 ⇒ reading A.
-2. **GPIO15's load.** Check continuity/DC from the GPIO15 pad through R3 to a transistor base,
-   and from that transistor's collector to Q3's gate. A transistor stage between GPIO15 and Q3
-   confirms reading B item 2.
-3. **Quiescent battery current with the board "off".** Break `B+` and meter it, no USB attached.
-   Reading B predicts ≈32 µA (12.3 µA divider + ≈20 µA ETA6096). A materially lower figure —
-   around 20 µA, i.e. charger quiescent alone — supports the divider being gated (reading A).
-4. **Divider tap with the board off.** Probe the BAT_ADC node (GPIO29). Reading B predicts
-   B+/3 present continuously; reading A predicts ≈0 V.
-5. **Off-while-charging.** With USB and a cell attached, drive GPIO15 low. Reading B predicts the
-   board keeps running (VBUS → D4 → VSYS). If it powers down, D4 either is not fitted or does not
-   feed VSYS.
-6. **First ADC read.** On battery, USB out, read GPIO29 before asserting any other GPIO. A
-   reading that already tracks the cell means the divider is ungated.
+1. **"Off" is not zero.** The divider draws ~12.3 µA continuously at 3.7 V and the ETA6096 adds
+   ~20 µA quiescent at BAT, both on the battery side of Q3 where no firmware action can reach
+   them. Budget **~32 µA** for a powered-down board. That is still roughly 1.8 years on a 500 mAh
+   cell, so it is a number to know rather than a problem to solve — but a power budget that
+   assumes zero is wrong. *(Calculated; worth one meter reading across `B+` to confirm.)*
+2. **The board cannot power itself off while USB is connected.** VBUS reaches VSYS through D4
+   regardless of Q3. Any test of the off path with a cable attached will appear to fail. Test the
+   off path on battery alone, and have the UI say so rather than appearing broken.
+3. **Never enter the off state with a timer running.** Dropping GPIO15 removes VDD from the RTC,
+   which has no backup cell fitted, so a pending alarm is simply lost.
+4. **Reading the battery is expensive.** C10/C12 on the divider tap give the ~50 ms settling
+   measured on the bench. Sample on a slow schedule and cache; never inside a frame loop.
 
 Until these are taken, treat the battery-sense enable question as open (see
 [Open items](#open-items)) and write the firmware so it is correct either way: assert GPIO15
@@ -736,10 +752,21 @@ section is a bench result, not a reading of the schematic.
 
 Three findings that contradict or extend the documented picture:
 
-**The IMU is at 0x6B, not 0x6A.** The schematic reads as SDO/SA0 tied to GND, which would put
-the part at 0x6A. On this board it answers only at **0x6B**, so SA0 is strapped high. This is
-almost certainly why every vendor driver probes both addresses. Treat 0x6B as the address and
-0x6A as the fallback, not the other way round.
+**The IMU is at 0x6B, not 0x6A — and the schematic's IMU block is not trustworthy.** The
+schematic draws pin 1 (SDO/SAO) tied to GND. The QMI8658C datasheet is explicit about what that
+means: *"The 7-bit device address for the QMI8658C is 0x6a (0b1101010) if SA0 is left
+unconnected, internally pulled down … When SA0 is pulled up externally, the 7-bit device address
+becomes 0x6b (0b1101011)."* So the schematic predicts **0x6A**, and the board answers only at
+**0x6B** — the as-built strap is high, contradicting the drawing.
+
+A second, independent error in the same block corroborates that it is unreliable: **U6's VDD
+(pin 8) and VDDIO (pin 5) are drawn on a net labelled `1V8`, and that label appears nowhere else
+on the sheet.** There is no 1.8 V regulator on this board — the only regulator is the 3.3 V
+RT9193-33PB. The net has no source, so it is a drafting artifact, most likely carried over from a
+1.8 V reference design whose SA0 strap was equally not updated.
+
+Practical rule: **probe 0x6B first, 0x6A as fallback.** This is presumably why every vendor
+driver probes both without explaining why.
 
 **The touch controller does not appear on a bus scan until `TP_RST` (GPIO22) is pulsed.** Held
 in reset it does not ACK its own address, so a scan reports it missing and it reads as a dead

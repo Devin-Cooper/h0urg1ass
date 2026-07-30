@@ -32,18 +32,32 @@ Every figure below is tagged with where it comes from.
 
 ---
 
-## 1. Disputed: the power path as drawn versus as described
+## 1. The power path as drawn versus as described
 
-> **Status: unresolved.** Three facts about this board's power path are described one way
-> in the widely-repeated summaries of the board, and appear a different way in the
-> schematic drawing. Both readings are stated below. Neither has been confirmed on
-> hardware. The firmware consequence happens to be identical under both readings, so the
-> design does not wait on the answer — but the current budget does, and anyone reworking
-> the board needs to know which reading holds.
+> **Status: settled — reading B is correct.** Three facts about this board's power path are
+> described one way in widely-repeated summaries and drawn a different way in the schematic.
+> On 2026-07-29 the schematic PDF (md5 `905f980ed9df9692c25f705c49573984`) was rendered at
+> 600 dpi and each block read directly. **Every reading-B claim is confirmed; reading A is
+> wrong on all three points.** Both are kept below because reading A circulates widely, and
+> knowing which claim is the wrong one beats silently deleting it.
+>
+> The decisive evidence: U1 pin 3 (EN) visibly ties back to the VIN/VSYS node; the sheet's
+> own net-alias table reads `SYS_OUT = GPIO14, SYS_EN = GPIO15`, with SYS_EN running through
+> R3 1 kΩ into T1's base and T1's collector on Q3's gate; the R11/R12 divider runs B+ to GND
+> with no series device; and D4 is drawn anode-on-VBUS, cathode-on-VSYS.
+>
+> A bench result corroborates it independently. The C10/C12 100 nF on the divider tap, against
+> the divider's 67 kΩ, predicts an RC of ~6.7 ms — so ~45 ms should be ~99.9% settled. The
+> measured curve reads 3.997 V of a settled 4.001 V at ~45 ms (§7). The topology predicts the
+> number the hardware produces.
+>
+> **The two current figures below (~12.3 µA divider, ~32 µA total "off") remain calculated,
+> not metered.** They follow from the now-confirmed topology, but no one has yet put a meter
+> across `B+`.
 
-### 1.1 The three disputed points
+### 1.1 The three points
 
-| # | Reading A — the widely-repeated description | Reading B — as the schematic appears to draw it `[SCH]` | Why it matters |
+| # | Reading A — the widely-repeated description. **Incorrect.** | Reading B — as the schematic draws it `[SCH]`. **Confirmed.** | Why it matters |
 |---|---|---|---|
 | **D1** | "RT9193-33PB 3.3 V LDO (U1) with **EN on net SYS_EN**", i.e. GPIO15 gates the regulator directly. | **U1 pin 3 (EN) is wired directly to VSYS/VIN.** The LDO self-enables the instant VSYS appears; `SYS_EN` (GPIO15) never touches it. The latch is not the LDO — it is Q3, the battery pass FET. | Under reading A the board could never cold-boot on battery, because GPIO15 is an output of a chip that the LDO itself powers. That internal inconsistency is an argument for reading B, not a proof of it. |
 | **D2** | "Battery voltage sense … **gated by Q3 (AO3401 P-FET)** so the divider does not drain the cell continuously." | **Q3 is the battery pass FET**, in the KEY block: source = `B+`, drain = `VBAT`, gate held by R9 10 kΩ to `B+`. The **R11 200 kΩ / R12 100 kΩ divider is hard-wired straight across `B+` to GND**, with C10 and C12 (100 nF each) on the tap. Nothing gates it. | Under reading B the divider drains **~12.3 µA continuously**, even with the board "off", and "off" is ~32 µA rather than ~20 µA. Under reading A the divider contributes nothing when off. This changes the shelf-life figure in §9, nothing else. |
