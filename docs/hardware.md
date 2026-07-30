@@ -765,11 +765,56 @@ section is a bench result, not a reading of the schematic.
 | Fact | Value | Note |
 |---|---|---|
 | Silicon stepping | **A2** | `chip_id = 0x20004927`. Erratum RP2350-E9 applies |
-| `clk_peri` after `set_sys_clock_khz(150000)` + re-parent | **150 MHz** | The trap is avoidable exactly as documented; 75 MHz SPI ceiling |
+| `clk_peri` after `set_sys_clock_khz` + re-parent | **= `clk_sys`** | The trap is avoidable exactly as documented |
+| Display, driven end to end | **works at 62.5 MHz** | Clean image, correct polarity, correct offset — see *Display, confirmed* below |
+| Full 240×280 frame | **19.1 ms** (52 fps) | 90% of the wire limit at 62.5 MHz |
+| 208×24 region | **1.53 ms** | 12.5× cheaper than a full frame |
+| Corner radius | **≈44 px, confirmed** | Measured off a drawn frame — see below |
 | Touch controller | **0x15**, `ChipID(0xA7) = 0xB5` | Only after `TP_RST` is pulsed — see below |
 | RTC | **0x51** | Responds to a bare address scan |
 | IMU | **0x6B**, `WHO_AM_I = 0x05`, revision `0x7C` | **Not 0x6A** — see below |
 | Battery, USB attached | **4.00 V** | After the settling described below |
+
+### Display, confirmed
+
+The panel has been driven end to end from the 1-bit framebuffer. Each of the following was a
+way the driver could have been silently wrong, and each was checked deliberately:
+
+* **Polarity** — black on white, so `INVON` is correct for this panel. Worth checking
+  explicitly, because a polarity error and an ink/paper swap look identical on a bench.
+* **GRAM offset** — no 20 px shift in either axis, so the `+20` lands on RASET in portrait and
+  `PanelGeometry::st7789_240x280_1in69()` encodes it correctly.
+* **Signal integrity at 62.5 MHz** — clean, with no static, banding or torn rows. This panel is
+  write-only, so a drawn-and-inspected pattern is the *only* integrity check that exists.
+* **No DMA strip-buffer race** — that failure presents as sparse static which does **not** change
+  when the SPI clock is halved, so it reads as signal integrity and sends you hunting the wrong
+  problem. Ping-pong strips, re-acquired per chunk, avoid it.
+
+**Corner radius ≈ 44 px, measured.** A 1 px full-perimeter frame is clipped at the corners, and
+each straight run terminates *at the centre of the corner arc*. That is the geometric prediction:
+for a rounded rect of radius R the top edge exists only for x ∈ [R, W−R], so its endpoint lands at
+x = R. The observed termination point therefore is R, and it matches the ~44 px derived from
+5.15 mm at 0.11655 mm/px.
+
+**The safe-area inset is now empirical, not inferred.** Minimum diagonal clearance is
+R − R/√2 = 44 − 31.1 = **12.9 px**; a **16 px inset** was fully visible with margin. Use 16 px.
+
+### The clock choice is counter-intuitive: run the CPU slower
+
+The PL022 divides `clk_peri` (which follows `clk_sys`) by an integer prescale and postdiv, and the
+ST7789V2's TSCYCW ceiling is 62.5 MHz. From 150 MHz the divider can only produce 75 MHz — over
+spec — or 37.5 MHz, with **nothing in between**. So the faster CPU clock costs 12.5 ms of every
+frame:
+
+| `clk_sys` | Best SPI ≤ 62.5 MHz | Full frame, measured |
+|---|---|---|
+| 150 MHz | 37.5 MHz | 31.6 ms |
+| **125 MHz** | **62.5 MHz** (exactly on spec) | **19.1 ms** |
+
+**125 MHz divides to exactly the panel's rated maximum**, making the display 1.65× faster for 17%
+less CPU. This application is bus-bound, so that trade is free. 250 MHz would also divide to
+62.5 MHz but is a 1.67× overclock for no display gain — revisit only if something proves
+compute-bound.
 
 Three findings that contradict or extend the documented picture:
 
