@@ -10,6 +10,7 @@
 
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
+#include "faces/splitflap_face.hpp"
 #include "timer/timer_model.hpp"
 
 #include <cstdio>
@@ -84,6 +85,18 @@ int main(int argc, char** argv) {
     t.tick(13 * 60 * SEC);
     digits.render(fb, t, 13 * 60 * SEC);
     emit(fb, dir, "digits-expired");
+
+    // Split-flap, mid-tick and settled, so the flip animation is visible.
+    h0::SplitFlapFace flap;
+    h0::TimerModel ft;
+    ft.setDuration(12 * 60 * SEC);
+    ft.start(0);
+    flap.render(fb, ft, 0);
+    emit(fb, dir, "splitflap-running");
+    flap.render(fb, ft, 60 * SEC);        // a tick has just landed
+    emit(fb, dir, "splitflap-tick");
+    flap.render(fb, ft, 60 * SEC + 40'000ull); // mid-flip
+    emit(fb, dir, "splitflap-midflip");
 
     return 0;
 }

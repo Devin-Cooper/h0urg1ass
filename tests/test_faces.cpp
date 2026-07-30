@@ -4,8 +4,11 @@
 
 #include <1bit/core/framebuffer.hpp>
 
+#include <cstdio>
+
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
+#include "faces/splitflap_face.hpp"
 #include "timer/timer_model.hpp"
 
 using onebit::BLACK;
@@ -351,6 +354,64 @@ TEST_CASE("one hour is not confusable with one minute") {
         for (int16_t x = 0; x < 240; ++x)
             if (fb.getPixel(x, y) != oneMinute.getPixel(x, y)) ++differing;
     CHECK(differing > 500);
+}
+
+// ------------------------------------------------------------ split-flap --
+
+TEST_CASE("split-flap settles within one second of every tick") {
+    // The defect this face exists to avoid: SplitFlapDisplay steps one character
+    // at a time, forward only. With the library's default alphanumeric sequence
+    // a digit DECREMENT -- what a countdown does every second -- costs 39 flaps,
+    // 5.19 s at the default cadence. The board never lands, and what it shows
+    // instead of digits is letters.
+    //
+    // A descending digits-only sequence makes a decrement one flap. This pins
+    // that: render at 20 Hz for a second per tick and require the readout to
+    // match the model by the end of each one.
+    h0::SplitFlapFace face;
+    h0::TimerModel t;
+    t.setDuration(300 * SEC);
+    t.start(0);
+
+    Panel fb;
+    for (int sec = 0; sec < 12; ++sec) {
+        for (int f = 0; f < 20; ++f) {
+            const uint64_t now = static_cast<uint64_t>(sec) * SEC + static_cast<uint64_t>(f) * 50'000ull;
+            face.render(fb, t, now);
+        }
+        // By the end of the second, every cell must have reached its target.
+        char want[8];
+        const uint32_t rem = t.remainingSeconds(static_cast<uint64_t>(sec) * SEC);
+        std::snprintf(want, sizeof(want), "%02u:%02u", rem / 60, rem % 60);
+        CAPTURE(sec);
+        CAPTURE(want);
+        for (int16_t c = 0; c < 5; ++c) {
+            CAPTURE(c);
+            CHECK(face.boardChar(c) == want[c]);
+        }
+    }
+}
+
+TEST_CASE("split-flap renders and stays in the safe box") {
+    h0::SplitFlapFace face;
+    h0::TimerModel t;
+    t.setDuration(12 * 60 * SEC);
+    t.start(0);
+
+    Panel fb;
+    face.render(fb, t, 0);
+    CHECK(inkCount(fb) > 300);
+    CHECK(inkInCorners(fb) == 0);
+}
+
+TEST_CASE("split-flap golden") {
+    h0::SplitFlapFace face;
+    h0::TimerModel t;
+    t.setDuration(12 * 60 * SEC);
+    t.start(0);
+    Panel fb;
+    face.render(fb, t, 0);
+    checkGolden(fb, "splitflap@running");
 }
 
 TEST_CASE("expiry inverts the field") {

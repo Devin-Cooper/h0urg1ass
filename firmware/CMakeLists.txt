@@ -26,6 +26,8 @@ add_executable(h0urg1ass
     src/main.cpp
     src/board/st7789_1in69.cpp
     src/faces/digits_face.cpp
+    src/faces/hourglass_face.cpp
+    src/faces/splitflap_face.cpp
     ${ONEBIT_SOURCES}
 )
 

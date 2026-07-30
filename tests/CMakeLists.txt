@@ -26,6 +26,7 @@ target_include_directories(onebit_host PUBLIC ${ONEBIT_ROOT}/include ${ONEBIT_RO
 add_library(h0_faces STATIC
     ${FW_SRC}/faces/digits_face.cpp
     ${FW_SRC}/faces/hourglass_face.cpp
+    ${FW_SRC}/faces/splitflap_face.cpp
 )
 target_include_directories(h0_faces PUBLIC ${FW_SRC})
 target_link_libraries(h0_faces PUBLIC onebit_host)
