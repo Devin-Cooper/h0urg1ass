@@ -24,16 +24,22 @@ constexpr int16_t kStroke = 5;
 
 /// Format remaining time for the big readout.
 ///
-/// MM:SS while under an hour, H:MM:SS above it. The colon is emitted separately
-/// so it can be blinked without re-laying-out the digits, which would make the
-/// numbers jitter horizontally once a second.
+/// `MM:SS` under an hour, `H:MM:SS` above it. The blink replaces the separator
+/// with a space rather than removing it, so the layout cannot shift: the vector
+/// font gives ':' and ' ' the same width multiplier, and dropping the character
+/// entirely would make the digits jump sideways once a second.
+///
+/// The hours form carries seconds deliberately. `H:MM` would render one hour as
+/// "1:00", which is indistinguishable from one minute -- and a second later it
+/// becomes "59:59", so the number appears to jump from 1 to 59.
 void formatTime(uint32_t totalSeconds, char* out, size_t n, bool showColon) {
     const char colon = showColon ? ':' : ' ';
     if (totalSeconds >= 3600) {
         const uint32_t h = totalSeconds / 3600;
         const uint32_t m = (totalSeconds % 3600) / 60;
-        std::snprintf(out, n, "%lu%c%02lu", static_cast<unsigned long>(h), colon,
-                      static_cast<unsigned long>(m));
+        const uint32_t s = totalSeconds % 60;
+        std::snprintf(out, n, "%lu%c%02lu%c%02lu", static_cast<unsigned long>(h), colon,
+                      static_cast<unsigned long>(m), colon, static_cast<unsigned long>(s));
     } else {
         const uint32_t m = totalSeconds / 60;
         const uint32_t s = totalSeconds % 60;
@@ -42,11 +48,26 @@ void formatTime(uint32_t totalSeconds, char* out, size_t n, bool showColon) {
     }
 }
 
-/// Centre a vector string horizontally in the safe area and draw it.
+/// Centre a vector string horizontally in the safe area and draw it, shrinking
+/// it if it would otherwise overflow.
+///
+/// Without the shrink, anything from `100:00` upward runs past the safe box and
+/// off the panel -- at 1000 hours the glyphs are silently clipped by the
+/// framebuffer's own bounds check, which looks like a rendering fault rather
+/// than a layout one. Scaling keeps long durations legible and inside the glass.
 void drawCentred(onebit::IFramebuffer& fb, const char* text, int16_t y, onebit::Color c) {
-    const int16_t w = onebit::getStringWidth(text, kCharW, kSpacing);
+    int16_t cw = kCharW, sp = kSpacing, st = kStroke;
+    int16_t w = onebit::getStringWidth(text, cw, sp);
+    while (w > safe::W && cw > 10) {
+        cw = static_cast<int16_t>(cw - 2);
+        sp = static_cast<int16_t>((sp > 2) ? sp - 1 : sp);
+        if (st > 2) st = static_cast<int16_t>(st - 1);
+        w = onebit::getStringWidth(text, cw, sp);
+    }
+    // Scale the height with the width so the digits keep their proportions.
+    const int16_t ch = static_cast<int16_t>(kCharH * cw / kCharW);
     const int16_t x = static_cast<int16_t>(safe::X + (safe::W - w) / 2);
-    onebit::renderString(fb, text, x, y, kCharW, kCharH, kSpacing, kStroke, c);
+    onebit::renderString(fb, text, x, y, cw, ch, sp, st, c);
 }
 
 void drawLabelCentred(onebit::IFramebuffer& fb, const char* text, int16_t y, onebit::Color c) {

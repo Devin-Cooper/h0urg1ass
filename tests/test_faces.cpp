@@ -175,6 +175,88 @@ TEST_CASE("hourglass is not offered without a duration") {
     CHECK(face.supports(t));
 }
 
+TEST_CASE("the pile grows all the way to empty") {
+    // Regression: the pile used to saturate at fraction 0.13 and then never
+    // change again, freezing for the last eighth of every countdown while the
+    // top kept draining.
+    Panel fb;
+    int prev = -1;
+    for (int i = 100; i >= 0; --i) {
+        h0::HourglassFace::renderAt(fb, static_cast<float>(i) / 100.0f, false, 0);
+        const int lower = inkInRows(fb, 149, 279);
+        CAPTURE(i);
+        CHECK(lower >= prev);
+        prev = lower;
+    }
+    h0::HourglassFace::renderAt(fb, 0.15f, false, 0);
+    const int a = inkInRows(fb, 149, 279);
+    h0::HourglassFace::renderAt(fb, 0.00f, false, 0);
+    const int b = inkInRows(fb, 149, 279);
+    CHECK(b > a + 200); // the last 15% must still visibly move
+}
+
+TEST_CASE("the stream bridges the neck to the pile at every running level") {
+    // Regression: the stream used to vanish for every fraction below 0.14 --
+    // showing sand upstairs, a static pile downstairs, and nothing connecting
+    // them, for exactly the part of the countdown a user is watching.
+    for (int i = 99; i >= 1; --i) {
+        const float f = static_cast<float>(i) / 100.0f;
+        Panel run, still;
+        h0::HourglassFace::renderAt(run, f, true, 0);
+        h0::HourglassFace::renderAt(still, f, false, 0);
+        CAPTURE(f);
+        CHECK(inkCount(run) > inkCount(still)); // a stream exists at all
+    }
+}
+
+TEST_CASE("the lower pile is a cone, not a level") {
+    // Area-based assertions cannot tell a cone from a flat fill of equal area,
+    // so this pins the shape itself: width must grow with depth.
+    Panel fb;
+    h0::HourglassFace::renderAt(fb, 0.5f, false, 0);
+    auto width = [&](int16_t y) {
+        int lo = 9999, hi = -1;
+        for (int16_t x = 47; x <= 193; ++x)
+            if (fb.getPixel(x, y) == BLACK) { if (x < lo) lo = x; hi = x; }
+        return (hi < 0) ? 0 : (hi - lo + 1);
+    };
+    int16_t apex = -1;
+    for (int16_t y = 149; y <= 250; ++y) if (width(y) > 4) { apex = y; break; }
+    REQUIRE(apex >= 149);
+    CAPTURE(apex);
+    CHECK(width(static_cast<int16_t>(apex + 24)) > width(static_cast<int16_t>(apex + 6)) + 20);
+}
+
+TEST_CASE("sand keeps a paper gutter from the glass wall") {
+    // The dither is 82% coverage against a solid wall -- close enough in density
+    // that without a white gap the two regions read as one and the silhouette is
+    // lost.
+    Panel fb;
+    h0::HourglassFace::renderAt(fb, 1.0f, false, 0);
+    for (int16_t y = 45; y <= 140; y = static_cast<int16_t>(y + 5)) {
+        int16_t wall = -1;
+        for (int16_t x = 40; x < 120; ++x)
+            if (fb.getPixel(x, y) == BLACK) { wall = x; break; }
+        REQUIRE(wall > 0);
+        CAPTURE(y);
+        CAPTURE(wall);
+        // wall is 2 px, then at least 1 px of paper before any sand
+        CHECK(fb.getPixel(static_cast<int16_t>(wall + 2), y) == WHITE);
+    }
+}
+
+TEST_CASE("the stream does not animate") {
+    // A per-frame wobble on the thinnest feature on screen is the shimmer the
+    // rule set forbids, and it would make the stream the only thing changing in
+    // most frames -- continuous repaints on a battery device.
+    Panel a, b;
+    h0::HourglassFace::renderAt(a, 0.5f, true, 0);
+    h0::HourglassFace::renderAt(b, 0.5f, true, 997);
+    for (int16_t y = 0; y < 280; ++y)
+        for (int16_t x = 0; x < 240; ++x)
+            REQUIRE(a.getPixel(x, y) == b.getPixel(x, y));
+}
+
 TEST_CASE("hourglass golden") {
     Panel fb;
     h0::HourglassFace::renderAt(fb, 1.00f, false, 0);
@@ -217,6 +299,58 @@ TEST_CASE("digits golden across states") {
     t.tick(13 * 60 * SEC);
     REQUIRE(t.isExpired());
     checkGolden((face.render(fb, t, 13 * 60 * SEC), fb), "digits@expired");
+}
+
+TEST_CASE("digits stay inside the safe box for every duration") {
+    // Regression: anything from 100 hours up ran past the safe box and off the
+    // panel, where the framebuffer's own bounds check silently clipped it.
+    // Expired is excluded -- the inversion deliberately fills the whole frame.
+    auto outsideSafe = [](const onebit::IFramebuffer& fb) {
+        int n = 0;
+        for (int16_t y = 0; y < fb.height(); ++y)
+            for (int16_t x = 0; x < fb.width(); ++x)
+                if (fb.getPixel(x, y) == BLACK &&
+                    (x < h0::safe::X || x >= h0::safe::X + h0::safe::W ||
+                     y < h0::safe::Y || y >= h0::safe::Y + h0::safe::H)) ++n;
+        return n;
+    };
+    for (uint64_t s : {59ull, 600ull, 3599ull, 3600ull, 35999ull, 359999ull, 360000ull}) {
+        Panel fb;
+        h0::TimerModel t;
+        t.setDuration(s * SEC);
+        t.start(0);
+        h0::DigitsFace face;
+        face.render(fb, t, 0);
+        CAPTURE(s);
+        CHECK(outsideSafe(fb) == 0);
+    }
+}
+
+TEST_CASE("one hour is not confusable with one minute") {
+    // H:MM would render an hour as "1:00" -- identical to one minute -- and a
+    // second later "59:59", so the number appears to jump from 1 to 59.
+    Panel fb;
+    h0::DigitsFace face;
+    h0::TimerModel t;
+    t.setDuration(3600 * SEC);
+    t.start(0);
+
+    Panel oneMinute;
+    face.render(fb, t, 0); // exactly 1 h remaining
+
+    h0::TimerModel m;
+    m.setDuration(60 * SEC);
+    m.start(0);
+    face.render(oneMinute, m, 0); // exactly 1 min remaining
+
+    // The actual property: an hour must not render identically to a minute.
+    // Ink count is the wrong proxy -- the hour form is auto-shrunk to fit, so it
+    // legitimately carries FEWER pixels than the larger five-glyph form.
+    int differing = 0;
+    for (int16_t y = 0; y < 280; ++y)
+        for (int16_t x = 0; x < 240; ++x)
+            if (fb.getPixel(x, y) != oneMinute.getPixel(x, y)) ++differing;
+    CHECK(differing > 500);
 }
 
 TEST_CASE("expiry inverts the field") {

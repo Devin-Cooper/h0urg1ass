@@ -54,5 +54,15 @@ endif()
 add_executable(render_faces render_faces.cpp)
 target_link_libraries(render_faces PRIVATE h0_faces)
 
+# Throwaway prototype: falling-sand hourglass, for a go/no-go look comparison
+# against the shaped fill. Deliberately not part of the test suite -- it renders
+# images and prints measurements, and is expected to be deleted once the
+# question it exists to answer has been answered.
+add_executable(sand_proto proto/sand_ca.cpp)
+target_link_libraries(sand_proto PRIVATE h0_faces onebit_host)
+if(NOT MSVC)
+    target_compile_options(sand_proto PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 enable_testing()
 add_test(NAME unit COMMAND h0urg1ass_tests)
