@@ -23,6 +23,11 @@ target_include_directories(onebit_host PUBLIC ${ONEBIT_ROOT}/include ${ONEBIT_RO
 # The faces, built for the host. Nothing under firmware/src/faces or
 # firmware/src/timer may include a pico-sdk header -- that separation is what
 # makes this build possible, and this target is what enforces it.
+add_library(h0_input STATIC
+    ${FW_SRC}/input/orientation.cpp
+)
+target_include_directories(h0_input PUBLIC ${FW_SRC})
+
 add_library(h0_faces STATIC
     ${FW_SRC}/faces/digits_face.cpp
     ${FW_SRC}/faces/hourglass_face.cpp
@@ -34,13 +39,14 @@ target_link_libraries(h0_faces PUBLIC onebit_host)
 add_executable(h0urg1ass_tests
     test_timer_model.cpp
     test_faces.cpp
+    test_orientation.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${ONEBIT_ROOT}/tests/doctest
 )
-target_link_libraries(h0urg1ass_tests PRIVATE h0_faces)
+target_link_libraries(h0urg1ass_tests PRIVATE h0_faces h0_input)
 target_compile_definitions(h0urg1ass_tests PRIVATE
     GOLDEN_DIR="${CMAKE_CURRENT_LIST_DIR}/golden"
 )
@@ -48,6 +54,7 @@ target_compile_definitions(h0urg1ass_tests PRIVATE
 if(NOT MSVC)
     target_compile_options(h0urg1ass_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(h0_faces PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(h0_input PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # Renders faces to .pbm for eyeballing. Separate from the test binary so the
