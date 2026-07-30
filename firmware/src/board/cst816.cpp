@@ -89,8 +89,20 @@ bool Cst816::read(TouchPoint& out) {
     // 12-bit coordinates: the high nibble of each pair carries the top 4 bits,
     // and the upper nibble holds flags that must be masked off or the point
     // lands off-panel.
-    out.x = static_cast<int16_t>((static_cast<uint16_t>(b[2] & 0x0F) << 8) | b[3]);
-    out.y = static_cast<int16_t>((static_cast<uint16_t>(b[4] & 0x0F) << 8) | b[5]);
+    const int16_t x = static_cast<int16_t>((static_cast<uint16_t>(b[2] & 0x0F) << 8) | b[3]);
+    const int16_t y = static_cast<int16_t>((static_cast<uint16_t>(b[4] & 0x0F) << 8) | b[5]);
+
+    // Reject anything off-panel. A 12-bit mask is not a range check: one corrupt
+    // sample of ~4095 becomes a ~4000 px drag delta, which after the picker's
+    // velocity gain is ~600 units in a single frame -- enough to slam a dialled
+    // duration to zero or to the nine-hour clamp, with no undo.
+    if (x < 0 || x >= 240 || y < 0 || y >= 280) {
+        out.pressed = false;
+        return true; // a valid read of an invalid position
+    }
+
+    out.x = x;
+    out.y = y;
     return true;
 }
 

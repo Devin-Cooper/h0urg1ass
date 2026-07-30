@@ -61,6 +61,13 @@ public:
 
     uint32_t word(int y, int w) const { return bits_[y][w]; }
 
+    /// True when a row holds nothing. Four ORs against 104 cell visits -- the
+    /// difference between paying for the whole grid every tick and paying only
+    /// for the part with sand in it.
+    bool rowEmpty(int y) const {
+        return (bits_[y][0] | bits_[y][1] | bits_[y][2] | bits_[y][3]) == 0u;
+    }
+
     /// MSB-first within a word, matching the framebuffer's own packing so a row
     /// can eventually be blitted rather than converted pixel by pixel.
     static int popcount(uint32_t v) {

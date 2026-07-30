@@ -44,6 +44,8 @@
 #include "faces/setting_face.hpp"
 #include "faces/splitflap_face.hpp"
 #include "input/orientation.hpp"
+#include "sand/sand_render.hpp"
+#include "sand/sand_sim.hpp"
 #include "timer/timer_model.hpp"
 
 using onebit::BLACK;
@@ -272,8 +274,42 @@ int main() {
     static h0::DragColumn colMin, colSec;
     static uint8_t activeCol = 0; // 0 none, 1 minutes, 2 seconds
 
-    app.onMotion(h0::MotionEvent::Settled, time_us_64());
+    // Seed a duration without pretending the device is flat. Forcing the
+    // setting posture at boot left the picker live in the hand whenever the
+    // device powered on upright, with the timer face never drawn at all --
+    // there is no transition at power-on for an event-driven flag to observe.
+    app.setFlat(true);
     app.setDuration(kDefaultDurationUs, time_us_64());
+    app.setFlat(false);
+
+    // Measure one sand tick on the real part before committing to the face.
+    // Every timing figure for the simulation so far is host, -O2, Apple
+    // Silicon; the M33 at 125 MHz is plausibly 30-60x slower, and the frame
+    // budget depends entirely on which.
+    {
+        static h0::SandSim probe;
+        probe.setWalls(h0::makeVessel(2));
+        probe.seed(1);
+        const int floorRow = h0::sandgeom::FLOOR_ROW;
+        for (int cy = floorRow - 40; cy < floorRow; ++cy)
+            for (int cx = 1; cx < h0::SandGrid::W - 1; ++cx)
+                if (!probe.walls().get(cx, cy)) probe.sand().set(cx, cy, true);
+        const int grains = probe.sand().count();
+
+        // Several rounds, because the state changes as the sand drains and a
+        // single average hides that. The first round starts from a packed slab
+        // and the last from a settled pile -- if those differ a lot, the cost is
+        // occupancy-dependent and a single number is misleading.
+        constexpr int kProbeTicks = 100;
+        printf("sand: %d grains,", grains);
+        for (int round = 0; round < 4; ++round) {
+            const absolute_time_t s0 = get_absolute_time();
+            for (int i = 0; i < kProbeTicks; ++i) probe.step(h0::Gravity::S);
+            const int64_t us = absolute_time_diff_us(s0, get_absolute_time());
+            printf("  %.2f", static_cast<double>(us) / kProbeTicks / 1000.0);
+        }
+        printf(" ms/tick (rounds 1-4)\n");
+    }
 
     printf("\nready -- stand it up to start, lay it flat to pause,\n");
     printf("turn it over to reset, face down to silence.\n");
@@ -288,6 +324,7 @@ int main() {
     uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
     uint64_t lastTouchUs = 0;
     bool touchActive = false;
+    uint32_t consecImuFails = 0;
 
     while (true) {
         const uint64_t now = time_us_64();
@@ -295,15 +332,33 @@ int main() {
         h0::Vec3 raw{};
         const bool imuRead = imuOk && imu.readRaw(raw);
         if (!imuRead) {
-            // The IMU is polled every frame, so it is the canary: if it stops
-            // answering, the bus is wedged and everything else is about to fail
-            // too. Recover once rather than limping.
             ++imuFails;
-            recoverI2c();
+            // The IMU is the canary -- polled every frame, so if it stops
+            // answering the bus is wedged and everything else is about to fail.
+            //
+            // But only recover when the part was actually FOUND at boot, and
+            // only after several consecutive failures. Without both guards, a
+            // board with no IMU tears the bus down and re-inits it forty times
+            // a second, forever, while the touch controller is the only live
+            // device on it.
+            if (imuOk && ++consecImuFails >= 3) {
+                consecImuFails = 0;
+                recoverI2c();
+            }
+        } else {
+            consecImuFails = 0;
         }
         if (imuRead) {
             const h0::Vec3 g = board::axisMap(raw);
             const h0::MotionEvent ev = orient.update(filter.push(g), now);
+
+            // Posture is derived from the MEASURED orientation, not accumulated
+            // from events. An event-derived flag goes stale whenever one is
+            // missed, and they are missed routinely: `flat -> edge -> upright`
+            // never produces the FlatBack->vertical transition that Raised
+            // needs, so the picker would stay live in the hand.
+            app.setFlat(orient.current() == h0::Orientation::FlatBack);
+
             if (ev != h0::MotionEvent::None) {
                 const h0::Feedback fbk = app.onMotion(ev, now);
                 lastInteractionUs = now;
@@ -345,24 +400,17 @@ int main() {
             }
         }
 
-        // Belt and braces: if the controller goes quiet without ever reporting a
-        // release, infer one. Otherwise the columns keep a stale drag reference
-        // and the next touch jumps.
+        // A poll normally reports the release itself (FingerNum goes to 0).
+        // This covers the case where reads are FAILING instead: without it
+        // `touchActive` stays set, the loop keeps polling a dead bus every
+        // frame burning i2c timeouts, and the columns hold a stale drag
+        // reference -- the exact opposite of the bus-quiet property that
+        // stopped the wedging.
         if (touchActive && lastTouchUs != 0 && now - lastTouchUs > 200'000ull) {
             touchActive = false;
             lastTouchUs = 0;
             tp.pressed = false;
-            touchRead = true;
-        }
-
-        // The controller stops pulsing when the finger lifts, so a release is
-        // never reported -- it has to be inferred from silence. Without this the
-        // columns keep their drag reference forever and the next touch is
-        // measured against a stale position.
-        if (!touchRead && lastTouchUs != 0 && now - lastTouchUs > 80'000ull) {
-            lastTouchUs = 0;
-            tp.pressed = false;
-            touchRead = true; // deliver the release
+            touchRead = true; // deliver the inferred release
         }
         if (touchRead) {
             // A horizontal swipe cycles the face. The controller detects it
@@ -371,20 +419,29 @@ int main() {
             // At most ONE face change per finger-down. The controller keeps
             // reporting the same gesture code for as long as the finger is
             // still there, so acting on the code directly fires it on every
-            // frame of the swipe and races through all three faces. A time
-            // debounce would only hide that; latching per touch is exact.
+            // frame of the swipe and races through all three faces.
+            //
+            // The release must be handled in a branch the swipe test cannot
+            // also take, or clearing the latch and re-testing it on the same
+            // sample fires a second time on the way up.
             const bool swipe = (tp.gesture == board::TouchGesture::SlideLeft ||
                                 tp.gesture == board::TouchGesture::SlideRight);
-            if (!tp.pressed) faceChangedThisTouch = false;
 
-            if (swipe && !faceChangedThisTouch) {
+            if (!tp.pressed) {
+                faceChangedThisTouch = false;
+                colMin.reset();
+                colSec.reset();
+                activeCol = 0;
+            } else if (swipe && !faceChangedThisTouch && !app.settingPosture()) {
+                // Not while setting: a finger drifting sideways during a
+                // vertical drag latches a swipe, and preempting the picker
+                // mid-gesture stalls the drag and beeps for no visible reason
+                // (the picker is what is drawn while flat, so the face change
+                // cannot even be seen).
                 faceChangedThisTouch = true;
                 app.cycleFace();
                 buzzer.play(h0::Feedback::Resumed);
                 faceShownUntil = now + 1'200'000ull;
-                colMin.reset();
-                colSec.reset();
-                activeCol = 0;
             } else if (app.settingPosture()) {
                 // Lock the column on touch-down. A finger drifts sideways during
                 // a vertical drag, and switching wheels mid-gesture would move
@@ -431,7 +488,12 @@ int main() {
             // The dial replaces the face while flat: a rotary control with no
             // visible ring is undiscoverable, and the timer is not counting
             // anyway.
-            const uint32_t total = app.timer().remainingSeconds(now);
+            // The DURATION, not the remaining time. The picker edits duration,
+            // so showing remaining meant that laying down a part-run timer
+            // displayed one number and edited another: run 5:00 down to 3:00,
+            // nudge minutes once, and it jumps to 6:00.
+            const uint32_t total =
+                static_cast<uint32_t>(app.timer().duration() / 1'000'000ull);
             h0::PickerState ps;
             ps.hours = total / 3600;
             ps.minutes = (total % 3600) / 60;
@@ -484,6 +546,11 @@ int main() {
                    static_cast<unsigned long>(touchReads));
         }
 
-        sleep_ms(25); // ~40 Hz, comfortably above the 125 Hz IMU rate we need
+        // ~30 Hz in practice: 25 ms of sleep plus render, SPI push and any i2c
+        // timeouts. That is BELOW the IMU's 125 Hz output rate, so most samples
+        // are dropped -- fine for a gravity vector that is low-passed anyway,
+        // but it means the filter's time constant is ~330 ms rather than the
+        // ~100 ms its own comment assumes at 100 Hz.
+        sleep_ms(25);
     }
 }

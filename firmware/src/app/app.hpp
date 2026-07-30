@@ -73,8 +73,17 @@ public:
     FaceId face() const;
     bool alarmSounding() const { return alarmOn_; }
 
-    /// True when the device is laid flat, which is when the dial is live.
+    /// True when the device is laid flat, which is when the picker is live.
     bool settingPosture() const { return flat_; }
+
+    /// Keep the setting posture in sync with the *measured* orientation.
+    ///
+    /// Deriving it from events alone goes stale whenever an event is missed,
+    /// and events are missed routinely: at power-on there is no transition to
+    /// observe, and `flat -> edge -> upright` never produces the
+    /// `FlatBack -> vertical` transition that `Raised` requires. Both leave the
+    /// picker live in the hand with the timer face never drawn.
+    void setFlat(bool flat) { flat_ = flat; }
 
     const TimerModel& timer() const { return timer_; }
 

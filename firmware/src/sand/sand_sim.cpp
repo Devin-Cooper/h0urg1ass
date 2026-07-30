@@ -62,6 +62,16 @@ int SandSim::step(Gravity g) {
     for (int iy = 0; iy < SandGrid::H; ++iy) {
         const int y = revY ? (SandGrid::H - 1 - iy) : iy;
 
+        // An empty-row skip was tried here and REMOVED: measured on the board,
+        // it made the tick 27% SLOWER (4.49 -> 5.7 ms, same harness, four rounds
+        // each, stable). `SandGrid::rowEmpty` is kept as a reasonable accessor,
+        // but do not reintroduce the skip without re-measuring on hardware.
+        //
+        // The likely cause is specific to this part and invisible on a host:
+        // code executes from external QSPI flash through a 16 kB XIP cache, so
+        // an extra branch in the hot loop costs more in instruction-fetch misses
+        // than it saves in skipped cells. The inner loop's own bit test is
+        // already cheap enough that skipping it is not worth a branch.
         const uint32_t r = next();
 
         // Which diagonal to try first, chosen per ROW rather than per frame.
