@@ -2,32 +2,6 @@
 
 namespace h0 {
 
-bool App::faceSuits(FaceId f) const {
-    if (f == FaceId::Hourglass) {
-        // Meaningless without a duration to be a fraction of, and not worth
-        // watching beyond the point where the drain stops being perceptible.
-        return timer_.duration() > 0 && timer_.duration() <= kHourglassMaxUs;
-    }
-    return true;
-}
-
-FaceId App::face() const {
-    // Fall back rather than draw a face that cannot represent the timer. The
-    // alternative -- an hourglass frozen at full because the duration is an
-    // hour -- looks like a bug.
-    return faceSuits(face_) ? face_ : FaceId::Digits;
-}
-
-void App::cycleFace() {
-    const FaceId order[3] = {FaceId::Hourglass, FaceId::Digits, FaceId::SplitFlap};
-    int idx = 0;
-    for (int i = 0; i < 3; ++i) if (order[i] == face_) idx = i;
-    for (int step = 1; step <= 3; ++step) {
-        const FaceId next = order[(idx + step) % 3];
-        if (faceSuits(next)) { face_ = next; return; }
-    }
-}
-
 bool App::setDuration(uint64_t us, uint64_t now) {
     // The dial is live only in the setting posture. Without this a pocket could
     // rewrite a running timer, and the gesture vocabulary has no undo.

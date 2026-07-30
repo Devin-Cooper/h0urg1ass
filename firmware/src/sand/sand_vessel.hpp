@@ -46,7 +46,18 @@ public:
     void tick(float fractionRemaining);
 
     const SandGrid& sand() const { return sim_.sand(); }
-    const SandGrid& walls() const { return open_; } ///< always draw the open shape
+
+    /// What to DRAW -- which is not what the sand collides with.
+    ///
+    /// The two roles split at the lintel: it is solid to the physics so no grain
+    /// can ever be inside the readout, but only its jambs and soffit are inked,
+    /// so `renderSand` leaves the interior white. Returning `open_` here instead
+    /// would paint the housing solid black, which is precisely the black-on-black
+    /// failure the lintel exists to prevent.
+    ///
+    /// The gate is not reflected either: the shut shape is a physics detail, and
+    /// drawing it would make the hole blink shut several times a second.
+    const SandGrid& walls() const { return drawn_; }
 
     int charge() const { return charge_; }
     int lowerCount() const;
@@ -59,8 +70,9 @@ private:
     uint32_t next();
 
     SandSim sim_;
-    SandGrid open_;
-    SandGrid shut_;
+    SandGrid open_;  ///< physics, gate open
+    SandGrid shut_;  ///< physics, gate shut
+    SandGrid drawn_; ///< ink
     Gravity gravity_ = Gravity::S;
     uint32_t prng_ = 1;
     int charge_ = 0;

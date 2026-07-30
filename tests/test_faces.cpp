@@ -6,10 +6,10 @@
 
 #include <cstdio>
 
-#include "faces/digits_face.hpp"
-#include "faces/hourglass_face.hpp"
+#include "faces/timer_face.hpp"
+#include "render/raster_ops.hpp"
+#include "sand/sand_render.hpp"
 #include "sand/sand_vessel.hpp"
-#include "faces/splitflap_face.hpp"
 #include "timer/timer_model.hpp"
 
 using onebit::BLACK;
@@ -19,6 +19,13 @@ namespace {
 
 constexpr uint64_t SEC = 1'000'000ull;
 using Panel = onebit::Framebuffer<240, 280>;
+
+/// The lintel interior -- the readout's home, and the region the whole design
+/// exists to keep clear of sand.
+constexpr int16_t CARD_X = h0::sandgeom::LINTEL_IN_X;
+constexpr int16_t CARD_Y = h0::sandgeom::LINTEL_IN_Y;
+constexpr int16_t CARD_W = h0::sandgeom::LINTEL_IN_W;
+constexpr int16_t CARD_H = h0::sandgeom::LINTEL_IN_H;
 
 /// Count ink pixels. The cheap invariant behind most of these tests: sand that
 /// appears or vanishes is a conservation bug, and a blank face is a silent
@@ -31,12 +38,25 @@ int inkCount(const onebit::IFramebuffer& fb) {
     return n;
 }
 
-/// Ink within a horizontal band, used to check where the sand actually is.
-int inkInRows(const onebit::IFramebuffer& fb, int16_t y0, int16_t y1) {
+int inkInRect(const onebit::IFramebuffer& fb, int16_t x0, int16_t y0, int16_t w, int16_t h) {
     int n = 0;
-    for (int16_t y = y0; y <= y1 && y < fb.height(); ++y)
-        for (int16_t x = 0; x < fb.width(); ++x)
+    for (int16_t y = y0; y < y0 + h; ++y)
+        for (int16_t x = x0; x < x0 + w; ++x)
             if (fb.getPixel(x, y) == BLACK) ++n;
+    return n;
+}
+
+bool inRect(int16_t x, int16_t y, int16_t x0, int16_t y0, int16_t w, int16_t h) {
+    return x >= x0 && x < x0 + w && y >= y0 && y < y0 + h;
+}
+
+/// Differing pixels, restricted to (or excluded from) a rectangle.
+int diff(const onebit::IFramebuffer& a, const onebit::IFramebuffer& b, int16_t x0, int16_t y0,
+         int16_t w, int16_t h, bool inside) {
+    int n = 0;
+    for (int16_t y = 0; y < a.height(); ++y)
+        for (int16_t x = 0; x < a.width(); ++x)
+            if (inRect(x, y, x0, y0, w, h) == inside && a.getPixel(x, y) != b.getPixel(x, y)) ++n;
     return n;
 }
 
@@ -50,7 +70,7 @@ int inkInRows(const onebit::IFramebuffer& fb, int16_t y0, int16_t y1) {
 /// records as measured fully visible on hardware, and it went unnoticed until
 /// the sand vessel became the first face to actually fill the safe box.
 int inkInCorners(const onebit::IFramebuffer& fb) {
-    constexpr int R = 44;
+    constexpr int R = h0::safe::CORNER_R;
     const int16_t w = fb.width(), h = fb.height();
     int n = 0;
     for (int16_t y = 0; y < h; ++y) {
@@ -65,115 +85,229 @@ int inkInCorners(const onebit::IFramebuffer& fb) {
     return n;
 }
 
+/// Run a face forward to a chosen instant at the simulation's own rate.
+void runTo(h0::TimerFace& face, const h0::TimerModel& t, uint64_t& now, uint64_t to) {
+    while (now < to) { now += 33'333ull; face.tick(t, now); }
+}
+
 } // namespace
 
-// ------------------------------------------------------------- hourglass --
+// ------------------------------------------------- the legibility mechanism --
 
-TEST_CASE("hourglass is not offered without a duration") {
-    h0::HourglassFace face;
-    h0::TimerModel t;
-    CHECK_FALSE(face.supports(t));   // no duration -- nothing to be a fraction of
-    t.setDuration(60 * SEC);
-    CHECK(face.supports(t));
-}
-
-TEST_CASE("digits face renders and respects the corners") {
-    Panel fb;
-    h0::TimerModel t;
-    t.setDuration(12 * 60 * SEC);
-    t.start(0);
-
-    h0::DigitsFace face;
-    face.render(fb, t, 0);
-    CHECK(inkCount(fb) > 500);
-    CHECK(inkInCorners(fb) == 0);
-}
-
-TEST_CASE("digits golden across states") {
-    Panel fb;
-    h0::DigitsFace face;
-    h0::TimerModel t;
-    t.setDuration(12 * 60 * SEC);
-
-    checkGolden((face.render(fb, t, 0), fb), "digits@idle");
-
-    t.start(0);
-    checkGolden((face.render(fb, t, 90 * SEC), fb), "digits@running");
-
-    t.pause(90 * SEC);
-    checkGolden((face.render(fb, t, 90 * SEC), fb), "digits@paused");
-
-    t.resume(90 * SEC);
-    t.tick(13 * 60 * SEC);
-    REQUIRE(t.isExpired());
-    checkGolden((face.render(fb, t, 13 * 60 * SEC), fb), "digits@expired");
-}
-
-TEST_CASE("digits stay inside the safe box for every duration") {
-    // Regression: anything from 100 hours up ran past the safe box and off the
-    // panel, where the framebuffer's own bounds check silently clipped it.
-    // Expired is excluded -- the inversion deliberately fills the whole frame.
-    auto outsideSafe = [](const onebit::IFramebuffer& fb) {
-        int n = 0;
-        for (int16_t y = 0; y < fb.height(); ++y)
-            for (int16_t x = 0; x < fb.width(); ++x)
-                if (fb.getPixel(x, y) == BLACK &&
-                    (x < h0::safe::X || x >= h0::safe::X + h0::safe::W ||
-                     y < h0::safe::Y || y >= h0::safe::Y + h0::safe::H)) ++n;
-        return n;
-    };
-    for (uint64_t s : {59ull, 600ull, 3599ull, 3600ull, 35999ull, 359999ull, 360000ull}) {
-        Panel fb;
-        h0::TimerModel t;
-        t.setDuration(s * SEC);
-        t.start(0);
-        h0::DigitsFace face;
-        face.render(fb, t, 0);
-        CAPTURE(s);
-        CHECK(outsideSafe(fb) == 0);
+TEST_CASE("the lintel interior is empty in the wall grid, so sand cannot enter it") {
+    // This is the whole design. Not a statistic about where grains happen to
+    // land -- the interior is simply not a place a grain can be, because the
+    // housing is solid to the physics. If this fails, the lintel failed to
+    // reach `open_` (or `shut_`) and the readout is drawing on black sand.
+    const h0::Gravity dirs[8] = {h0::Gravity::S,  h0::Gravity::SW, h0::Gravity::W,
+                                 h0::Gravity::NW, h0::Gravity::N,  h0::Gravity::NE,
+                                 h0::Gravity::E,  h0::Gravity::SE};
+    for (int grains : {400, 900, 2000}) {
+        for (int d = 0; d < 8; ++d) {
+            h0::SandVessel v;
+            v.begin();
+            v.reset(0xC0FFEEu, grains);
+            v.setGravity(dirs[d]);
+            for (int i = 0; i < 400; ++i) {
+                v.tick(1.0f - static_cast<float>(i) / 400.0f);
+                int inside = 0;
+                for (int cy = h0::sandgeom::LINTEL_CY0; cy <= h0::sandgeom::LINTEL_CY1; ++cy)
+                    for (int cx = h0::sandgeom::LINTEL_CX0; cx <= h0::sandgeom::LINTEL_CX1; ++cx)
+                        if (v.sand().get(cx, cy)) ++inside;
+                if (inside != 0) { CAPTURE(grains); CAPTURE(d); CAPTURE(i); REQUIRE(inside == 0); }
+            }
+        }
     }
 }
 
-TEST_CASE("one hour is not confusable with one minute") {
-    // H:MM would render an hour as "1:00" -- identical to one minute -- and a
-    // second later "59:59", so the number appears to jump from 1 to 59.
-    Panel fb;
-    h0::DigitsFace face;
-    h0::TimerModel t;
-    t.setDuration(3600 * SEC);
-    t.start(0);
-
-    Panel oneMinute;
-    face.render(fb, t, 0); // exactly 1 h remaining
-
-    h0::TimerModel m;
-    m.setDuration(60 * SEC);
-    m.start(0);
-    face.render(oneMinute, m, 0); // exactly 1 min remaining
-
-    // The actual property: an hour must not render identically to a minute.
-    // Ink count is the wrong proxy -- the hour form is auto-shrunk to fit, so it
-    // legitimately carries FEWER pixels than the larger five-glyph form.
-    int differing = 0;
-    for (int16_t y = 0; y < 280; ++y)
-        for (int16_t x = 0; x < 240; ++x)
-            if (fb.getPixel(x, y) != oneMinute.getPixel(x, y)) ++differing;
-    CHECK(differing > 500);
+TEST_CASE("a sand-only render leaves the card white, with no help from the face") {
+    // The corollary of the wall trick, and the one that catches `walls()` being
+    // switched back to the physics grid: that would paint the housing solid
+    // black -- 5,700 px of it -- which is exactly the black-on-black failure the
+    // design exists to prevent, arriving as a one-line change.
+    for (int grains : {400, 900, 2000}) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(7u, grains);
+        for (int i = 0; i < 600; ++i) {
+            v.tick(1.0f - static_cast<float>(i) / 600.0f);
+            if (i % 60) continue;
+            Panel fb;
+            fb.clear(WHITE);
+            h0::renderSand(fb, v.sand(), v.walls());
+            CAPTURE(grains);
+            CAPTURE(i);
+            REQUIRE(inkInRect(fb, CARD_X, CARD_Y, CARD_W, CARD_H) == 0);
+        }
+    }
 }
 
-// ------------------------------------------------------------ split-flap --
+TEST_CASE("what the card shows does not depend on where the sand is") {
+    // The property stated directly: two runs of the same timer, showing the same
+    // time, but with the sand driven into completely different configurations.
+    // Inside the card they must be pixel-identical.
+    h0::TimerModel t;
+    t.setDuration(300 * SEC);
+    t.start(0);
 
-TEST_CASE("split-flap settles within one second of every tick") {
-    // The defect this face exists to avoid: SplitFlapDisplay steps one character
-    // at a time, forward only. With the library's default alphanumeric sequence
-    // a digit DECREMENT -- what a countdown does every second -- costs 39 flaps,
-    // 5.19 s at the default cadence. The board never lands, and what it shows
-    // instead of digits is letters.
+    h0::TimerFace a, b;
+    a.restart(t, 11u);
+    b.restart(t, 11u);
+    a.setGravity(h0::Gravity::S); // sand banks in the shoulders and drains
+    b.setGravity(h0::Gravity::N); // sand packs up against the soffit
+
+    uint64_t na = 0, nb = 0;
+    runTo(a, t, na, 60 * SEC);
+    runTo(b, t, nb, 60 * SEC);
+
+    Panel fa, fb2;
+    a.render(fa, t, 60 * SEC);
+    b.render(fb2, t, 60 * SEC);
+
+    CHECK(diff(fa, fb2, CARD_X, CARD_Y, CARD_W, CARD_H, true) == 0);
+    // ...and the sand really was somewhere different, or the test proves nothing.
+    CHECK(diff(fa, fb2, CARD_X, CARD_Y, CARD_W, CARD_H, false) > 500);
+}
+
+TEST_CASE("the composite is sand everywhere outside the housing") {
+    // Catches a stray fb.clear() inside the readout path, which would blank the
+    // sand and leave a board floating on white.
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+
+    h0::TimerFace face;
+    face.restart(t, 5u);
+    uint64_t now = 0;
+    runTo(face, t, now, 40 * SEC);
+
+    Panel composed;
+    face.render(composed, t, 40 * SEC);
+
+    // Compare outside the lintel entirely: inside it the composite has the
+    // board and the label, and the sand-only frame does not.
+    Panel bare;
+    bare.clear(WHITE);
+    h0::SandGrid drawn = h0::makeVessel(h0::SandVessel::kHoleHalf);
+    h0::drawLintelOutline(drawn);
+    h0::renderSand(bare, face.sand(), drawn);
+
+    CHECK(diff(composed, bare, h0::sandgeom::LINTEL_X, h0::sandgeom::LINTEL_Y,
+               h0::sandgeom::LINTEL_W, h0::sandgeom::LINTEL_H, false) == 0);
+}
+
+// ------------------------------------------------------------- the drain --
+
+TEST_CASE("sand is conserved for the whole run") {
+    for (int grains : {400, 900, 2000}) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(3u, grains);
+        const int charged = v.charge();
+        CHECK(charged > 0);
+        for (int i = 0; i < 800; ++i) {
+            v.tick(1.0f - static_cast<float>(i) / 800.0f);
+            CAPTURE(grains);
+            CAPTURE(i);
+            REQUIRE(v.sand().count() == charged);
+        }
+    }
+}
+
+TEST_CASE("the upper chamber actually empties") {
+    // On a FLAT floor sand is stable at zero slope, so grains far from the hole
+    // never slide in on their own -- measured, 33-86% strand permanently. The
+    // centreline attractor is what makes the vessel drainable at all, and the
+    // lintel is welded to the ceiling so that it cannot reintroduce the problem
+    // by giving grains somewhere to stack that is not reachable.
     //
-    // A descending digits-only sequence makes a decrement one flap. This pins
-    // that: render at 20 Hz for a second per tick and require the readout to
-    // match the model by the end of each one.
-    h0::SplitFlapFace face;
+    // Measured in GRID space, not pixels: the lintel outline adds a fixed 436 px
+    // to the upper band, so a pixel count can no longer tell stranded sand from
+    // structure, and the old "< 40 stray pixels" would degrade silently.
+    for (int grains : {400, 900, 2000}) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(99u, grains);
+        for (int i = 0; i < 4000; ++i) v.tick(0.0f); // drain flat out
+        for (int i = 0; i < 120; ++i) v.tick(0.0f);  // and settle
+        CAPTURE(grains);
+        CHECK(v.sand().countRows(0, h0::sandgeom::FLOOR_ROW - 1) == 0);
+    }
+}
+
+TEST_CASE("short timers never reach the lintel at all") {
+    // The lintel costs the sand nothing below three minutes: the charge is not
+    // tall enough to reach it, so the volume it occupies was empty anyway. This
+    // is why every timer up to three minutes behaves exactly as it did before
+    // the readout moved into the chamber.
+    for (int grains : {400, 900}) {
+        h0::SandVessel v;
+        v.begin();
+        v.reset(42u, grains);
+        CAPTURE(grains);
+        CHECK(v.charge() == grains); // nothing truncated by the obstacle
+        CHECK(v.sand().countRows(h0::sandgeom::LINTEL_CY0, h0::sandgeom::LINTEL_CY1) == 0);
+    }
+
+    // The top tier does reach it, and must still fit with margin to spare.
+    h0::SandVessel big;
+    big.begin();
+    big.reset(42u, 2000);
+    CHECK(big.charge() >= 2000);
+}
+
+TEST_CASE("the drain is visible: the frame changes as the sand falls") {
+    // Catches the tick call being lost, which yields a still life that every
+    // static golden would happily pass.
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+
+    h0::TimerFace face;
+    face.restart(t, 1234u);
+    uint64_t now = 0;
+
+    runTo(face, t, now, 30 * SEC);
+    Panel early;
+    face.render(early, t, 30 * SEC);
+
+    runTo(face, t, now, 95 * SEC);
+    Panel late;
+    face.render(late, t, 95 * SEC);
+
+    CHECK(diff(early, late, CARD_X, CARD_Y, CARD_W, CARD_H, false) > 500);
+}
+
+TEST_CASE("a flip recharges the sand, not just the clock") {
+    // TimerModel::reset() does not touch the duration, so watching the duration
+    // missed a flip entirely: the clock ran from full while the sand stayed
+    // where it had drained to, and the gate stayed shut for the whole next run.
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+
+    h0::TimerFace face;
+    face.restart(t, 8u);
+    uint64_t now = 0;
+    runTo(face, t, now, 60 * SEC);
+    REQUIRE(face.sand().countRows(h0::sandgeom::FLOOR_ROW, h0::SandGrid::H - 1) > 0);
+
+    t.reset(now); // the flip
+    face.tick(t, now);
+
+    CHECK(face.sand().countRows(h0::sandgeom::FLOOR_ROW, h0::SandGrid::H - 1) == 0);
+    CHECK(face.sand().countRows(0, h0::sandgeom::FLOOR_ROW - 1) == face.charge());
+}
+
+// ------------------------------------------------------------ the readout --
+
+TEST_CASE("the board settles within one second of every tick") {
+    // The defect this guards: SplitFlapDisplay steps one character at a time,
+    // forward only. With the library's default alphanumeric sequence a digit
+    // DECREMENT -- what a countdown does every second -- costs 39 flaps, 5.19 s
+    // at the default cadence. The board never lands, and what it shows instead
+    // of digits is letters.
+    h0::TimerFace face;
     h0::TimerModel t;
     t.setDuration(300 * SEC);
     t.start(0);
@@ -181,10 +315,10 @@ TEST_CASE("split-flap settles within one second of every tick") {
     Panel fb;
     for (int sec = 0; sec < 12; ++sec) {
         for (int f = 0; f < 20; ++f) {
-            const uint64_t now = static_cast<uint64_t>(sec) * SEC + static_cast<uint64_t>(f) * 50'000ull;
+            const uint64_t now =
+                static_cast<uint64_t>(sec) * SEC + static_cast<uint64_t>(f) * 50'000ull;
             face.render(fb, t, now);
         }
-        // By the end of the second, every cell must have reached its target.
         char want[8];
         const uint32_t rem = t.remainingSeconds(static_cast<uint64_t>(sec) * SEC);
         std::snprintf(want, sizeof(want), "%02u:%02u", rem / 60, rem % 60);
@@ -197,56 +331,60 @@ TEST_CASE("split-flap settles within one second of every tick") {
     }
 }
 
-TEST_CASE("split-flap renders and stays in the safe box") {
-    h0::SplitFlapFace face;
+TEST_CASE("the board spells the time across the whole representable range") {
+    // The dial is capped at 99:59, so this is exact everywhere -- the clamp in
+    // formatMMSS is unreachable rather than merely unlikely. This is the whole
+    // of what the deleted digits face was silently providing.
+    Panel fb;
+    for (uint32_t s = 0; s <= 5999; ++s) {
+        h0::TimerModel t;
+        t.setDuration(static_cast<uint64_t>(s) * SEC);
+        t.start(0);
+        // A fresh face each time: the first render snaps the board to its
+        // target rather than cascading, which is exactly the behaviour being
+        // asserted. Reusing one face with a frozen clock gives it no time to
+        // flap and tests nothing but the previous iteration's leftovers.
+        h0::TimerFace face;
+        face.render(fb, t, 0);
+        char want[8];
+        std::snprintf(want, sizeof(want), "%02u:%02u", s / 60, s % 60);
+        bool ok = true;
+        for (int16_t c = 0; c < 5; ++c) ok = ok && face.boardChar(c) == want[c];
+        if (!ok) { CAPTURE(s); CAPTURE(want); REQUIRE(ok); }
+    }
+}
+
+TEST_CASE("the readout sits inside its housing") {
+    // Pins the board's ink box, which is what makes the knockout exactly sized.
     h0::TimerModel t;
-    t.setDuration(12 * 60 * SEC);
+    t.setDuration(300 * SEC);
     t.start(0);
+    h0::TimerFace face;
+    face.restart(t, 1u);
 
     Panel fb;
     face.render(fb, t, 0);
-    CHECK(inkCount(fb) > 300);
-    CHECK(inkInCorners(fb) == 0);
+
+    int16_t x0 = 240, y0 = 280, x1 = -1, y1 = -1;
+    for (int16_t y = CARD_Y; y < CARD_Y + CARD_H; ++y)
+        for (int16_t x = CARD_X; x < CARD_X + CARD_W; ++x)
+            if (fb.getPixel(x, y) == BLACK) {
+                if (x < x0) x0 = x;
+                if (y < y0) y0 = y;
+                if (x > x1) x1 = x;
+                if (y > y1) y1 = y;
+            }
+    // The bounding box is scanned over the card, so comparing it back against the
+    // card would be true by construction -- and would pass on a blank card too.
+    // Assert the measured box instead, and require it to exist at all.
+    REQUIRE(x1 >= 0); // a readout that drew nothing must fail, not pass vacuously
+    CHECK(x0 == 68);  // kBoardX
+    CHECK(y0 == 20);  // kBoardY
+    CHECK(x1 == 172); // kBoardX + 5 * kCellW - 1, cell borders included
+    CHECK(y1 == 53);  // kBoardY + kCellH - 1; Running, so no label band
 }
 
-TEST_CASE("split-flap golden") {
-    h0::SplitFlapFace face;
-    h0::TimerModel t;
-    t.setDuration(12 * 60 * SEC);
-    t.start(0);
-    Panel fb;
-    face.render(fb, t, 0);
-    checkGolden(fb, "splitflap@running");
-}
-
-TEST_CASE("expiry inverts the field") {
-    // The largest signal available in one bit, and it must actually be large.
-    Panel fb;
-    h0::DigitsFace face;
-    h0::TimerModel t;
-    t.setDuration(SEC);
-    t.start(0);
-
-    face.render(fb, t, 0);
-    const int running = inkCount(fb);
-
-    t.tick(2 * SEC);
-    face.render(fb, t, 2 * SEC);
-    const int expired = inkCount(fb);
-
-    CHECK(expired > running * 5);
-}
-
-// ------------------------------------------------- simulated hourglass --
-
-namespace {
-
-/// Run the face forward to a given point in a 120 s timer.
-void runSand(h0::HourglassFace& face, h0::TimerModel& t, uint64_t to) {
-    for (uint64_t now = 0; now <= to; now += 33'333ull) face.tick(t, now);
-}
-
-} // namespace
+// ------------------------------------------------------------ the frame --
 
 TEST_CASE("the corner helper flags clipped ink and clears the safe box") {
     // This helper gates several faces, so a version that always returns zero
@@ -264,108 +402,118 @@ TEST_CASE("the corner helper flags clipped ink and clears the safe box") {
     CHECK(inkInCorners(fb) == 0);
 }
 
-TEST_CASE("the sand drains from the upper chamber to the lower one") {
-    Panel fb;
+TEST_CASE("nothing is drawn under the rounded corners, in any state") {
     h0::TimerModel t;
     t.setDuration(120 * SEC);
-    t.start(0);
-
-    h0::HourglassFace face;
-    face.restart(t, 4321);
-    face.render(fb, t, 0);
-    const int upperStart = inkInRows(fb, 0, 139);
-
-    runSand(face, t, 110 * SEC);
-    face.render(fb, t, 110 * SEC);
-    const int upperEnd = inkInRows(fb, 0, 139);
-    const int lowerEnd = inkInRows(fb, 141, 279);
-
-    CHECK(upperStart > 0);
-    CHECK(upperEnd < upperStart / 2); // most of it has gone
-    CHECK(lowerEnd > 0);
-}
-
-TEST_CASE("the upper chamber actually empties") {
-    // On a FLAT floor sand is stable at zero slope, so grains far from the hole
-    // never slide in on their own -- measured, 33-86% strand permanently. The
-    // centreline attractor is what makes the vessel drainable at all, so this
-    // pins the property it exists for.
-    h0::TimerModel t;
-    t.setDuration(120 * SEC);
-    t.start(0);
-
-    h0::HourglassFace face;
-    face.restart(t, 99);
-    runSand(face, t, 130 * SEC);
+    h0::TimerFace face;
+    face.restart(t, 3u);
 
     Panel fb;
-    face.render(fb, t, 130 * SEC);
+    face.render(fb, t, 0); // Idle
+    CHECK(inkInCorners(fb) == 0);
 
-    // Measure against an empty vessel rather than a guessed threshold: the
-    // border alone puts ~900 px of ink above the floor, which swamps any
-    // constant picked by eye.
-    Panel bare;
-    bare.clear(WHITE);
-    h0::SandGrid noSand;
-    h0::renderSand(bare, noSand, h0::makeVessel(h0::SandVessel::kHoleHalf));
-    const int sandLeft = inkInRows(fb, 0, 138) - inkInRows(bare, 0, 138);
-
-    CHECK(sandLeft >= 0);
-    CHECK(sandLeft < 40); // a couple of stragglers at most, out of 900 grains
-}
-
-TEST_CASE("the sand tracks the schedule rather than free-falling") {
-    // The gate is the whole reason this is a timer and not a toy: unmetered the
-    // charge drains in seconds regardless of the duration set.
-    h0::TimerModel t;
-    t.setDuration(120 * SEC);
     t.start(0);
+    uint64_t now = 0;
+    runTo(face, t, now, 40 * SEC);
+    face.render(fb, t, 40 * SEC);
+    CHECK(inkInCorners(fb) == 0);
 
-    h0::HourglassFace face;
-    face.restart(t, 7);
-    runSand(face, t, 30 * SEC);
+    t.pause(40 * SEC);
+    face.render(fb, t, 40 * SEC);
+    CHECK(inkInCorners(fb) == 0);
 
-    Panel fb;
-    face.render(fb, t, 30 * SEC);
-    const int upperQuarter = inkInRows(fb, 0, 139);
-
-    runSand(face, t, 90 * SEC);
-    face.render(fb, t, 90 * SEC);
-    const int upperThreeQuarter = inkInRows(fb, 0, 139);
-
-    // A quarter of the way through, most of the sand is still upstairs.
-    CHECK(upperQuarter > upperThreeQuarter);
-    CHECK(upperThreeQuarter > 0);
-}
-
-TEST_CASE("the simulated hourglass respects the rounded corners") {
-    h0::TimerModel t;
-    t.setDuration(120 * SEC);
-    t.start(0);
-    h0::HourglassFace face;
-    face.restart(t, 5);
-    Panel fb;
-    face.render(fb, t, 0);
+    t.resume(40 * SEC);
+    t.tick(200 * SEC);
+    REQUIRE(t.isExpired());
+    face.render(fb, t, 200 * SEC);
+    // The expiry invert is scoped to the safe box precisely so this holds: a
+    // whole-panel invert measures ~1,800 ink pixels under the clip.
     CHECK(inkInCorners(fb) == 0);
 }
 
-TEST_CASE("a new duration re-charges the sand") {
-    // Carrying an old charge over would drain at the wrong rate for the whole
-    // of the next run.
+TEST_CASE("expiry is unmistakable") {
+    // Absolutes rather than a ratio. The running frame's ink varies with the
+    // charge and where the sand happens to be, so a ratio moves for reasons that
+    // are not defects; the two populations are far enough apart to separate with
+    // fixed bounds. Measured on this fixture: running 5,300, expired 42,800.
     h0::TimerModel t;
     t.setDuration(60 * SEC);
     t.start(0);
-    h0::HourglassFace face;
-    face.restart(t, 11);
-    runSand(face, t, 40 * SEC);
+    h0::TimerFace face;
+    face.restart(t, 4u);
+    uint64_t now = 0;
+    runTo(face, t, now, 30 * SEC);
+
+    Panel running;
+    face.render(running, t, 30 * SEC);
+
+    t.tick(120 * SEC);
+    REQUIRE(t.isExpired());
+    Panel expired;
+    face.render(expired, t, 120 * SEC);
+
+    CHECK(inkCount(running) < 15000);
+    CHECK(inkCount(expired) > 30000);
+}
+
+TEST_CASE("rotate180 is exact and is its own inverse") {
+    // The failure mode is a mirrored-but-plausible readout: "05:12" reversed is
+    // still five plausible glyphs. Only a per-pixel reference catches a bit-order
+    // error, and only the involution catches an off-by-one in the byte walk.
+    // The fixture MUST be asymmetric under 180 degrees, or the test cannot fail.
+    // The obvious-looking ((x*7 + y*13) & 5) == 1 is not: it is invariant under
+    // the rotation, so a no-op rotate180 passes it. Verified by construction
+    // below rather than by inspection, because that is exactly the mistake this
+    // comment exists to stop someone repeating.
+    auto pattern = [](int16_t x, int16_t y) {
+        return (x < 40 && y < 60) || ((x * 3 + y) % 7 == 0 && x > y / 2);
+    };
+
+    Panel fb, reference, original;
+    fb.clear(WHITE);
+    reference.clear(WHITE);
+    original.clear(WHITE);
+    for (int16_t y = 0; y < 280; ++y) {
+        for (int16_t x = 0; x < 240; ++x) {
+            if (pattern(x, y)) { fb.setPixel(x, y, BLACK); original.setPixel(x, y, BLACK); }
+            if (pattern(static_cast<int16_t>(239 - x), static_cast<int16_t>(279 - y)))
+                reference.setPixel(x, y, BLACK);
+        }
+    }
+
+    // Guard the guard: if the fixture were symmetric, the two CHECKs below would
+    // both pass against a rotate180 that did nothing at all.
+    REQUIRE(diff(reference, original, 0, 0, 0, 0, false) > 1000);
+
+    h0::rotate180(fb);
+    CHECK(diff(fb, reference, 0, 0, 0, 0, false) == 0);
+
+    h0::rotate180(fb);
+    CHECK(diff(fb, original, 0, 0, 0, 0, false) == 0);
+}
+
+TEST_CASE("the timer face golden across states") {
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    h0::TimerFace face;
+    face.restart(t, 0xC0FFEEu);
 
     Panel fb;
-    face.render(fb, t, 40 * SEC);
-    const int drained = inkInRows(fb, 0, 139);
+    checkGolden((face.render(fb, t, 0), fb), "timer@idle");
 
-    t.setDuration(600 * SEC);
     t.start(0);
-    face.tick(t, 41 * SEC); // notices the change and restarts
-    face.render(fb, t, 41 * SEC);
-    CHECK(inkInRows(fb, 0, 139) > drained);
+    uint64_t now = 0;
+    runTo(face, t, now, 30 * SEC);
+    checkGolden((face.render(fb, t, 30 * SEC), fb), "timer@running");
+
+    runTo(face, t, now, 60 * SEC);
+    checkGolden((face.render(fb, t, 60 * SEC), fb), "timer@half");
+
+    t.pause(60 * SEC);
+    checkGolden((face.render(fb, t, 60 * SEC), fb), "timer@paused");
+
+    t.resume(60 * SEC);
+    t.tick(200 * SEC);
+    REQUIRE(t.isExpired());
+    checkGolden((face.render(fb, t, 200 * SEC), fb), "timer@expired");
 }

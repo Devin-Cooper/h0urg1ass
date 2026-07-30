@@ -39,11 +39,10 @@
 #include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
 #include "input/drag_column.hpp"
-#include "faces/digits_face.hpp"
-#include "faces/hourglass_face.hpp"
 #include "faces/setting_face.hpp"
-#include "faces/splitflap_face.hpp"
+#include "faces/timer_face.hpp"
 #include "input/orientation.hpp"
+#include "render/raster_ops.hpp"
 #include "sand/sand_render.hpp"
 #include "sand/sand_sim.hpp"
 #include "timer/timer_model.hpp"
@@ -203,6 +202,14 @@ h0::Gravity gravityDir(const h0::Vec3& g) {
     return g.x > 0 ? h0::Gravity::E : h0::Gravity::W;
 }
 
+/// The opposite direction. `Gravity` is declared S, SW, W, NW, N, NE, E, SE, so
+/// opposites sit exactly four apart and this is arithmetic rather than a table.
+h0::Gravity negate(h0::Gravity g) {
+    return static_cast<h0::Gravity>((static_cast<int>(g) + 4) & 7);
+}
+static_assert(static_cast<int>(h0::Gravity::N) - static_cast<int>(h0::Gravity::S) == 4,
+              "negate() assumes opposites are four apart in the enum");
+
 const char* orientationName(h0::Orientation o) {
     switch (o) {
         case h0::Orientation::UprightA: return "UPRIGHT";
@@ -282,9 +289,7 @@ int main() {
     lcd.clear(WHITE);
     lcd.setBacklight(kBacklightActive);
 
-    static h0::DigitsFace digits;
-    static h0::HourglassFace hourglass;
-    static h0::SplitFlapFace splitflap;
+    static h0::TimerFace face;
 
     static h0::App app;
     static h0::OrientationTracker orient;
@@ -332,12 +337,15 @@ int main() {
     printf("\nready -- stand it up to start, lay it flat to pause,\n");
     printf("turn it over to reset, face down to silence.\n");
     printf("while flat, drag the MIN / SEC columns to set the time.\n");
-    printf("swipe left or right to change face\n\n");
+    printf("turn it over and the display follows\n\n");
 
     uint32_t frames = 0;
-    uint64_t faceShownUntil = 0;
     uint64_t lastInteractionUs = 0;
-    bool faceChangedThisTouch = false;
+
+    // True while the device is held the other way up. Latched from the last
+    // definite upright posture: flat and face-down have no in-plane direction
+    // to read, so they keep whatever was last known rather than flapping.
+    bool inverted = false;
     uint8_t backlight = kBacklightActive;
     uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
     uint64_t lastTouchUs = 0;
@@ -377,12 +385,22 @@ int main() {
             // needs, so the picker would stay live in the hand.
             app.setFlat(orient.current() == h0::Orientation::FlatBack);
 
+            if (orient.current() == h0::Orientation::UprightA) inverted = false;
+            else if (orient.current() == h0::Orientation::UprightB) inverted = true;
+
             // The sand follows real gravity. Lying flat is the one posture with
             // no in-plane direction, so it keeps whatever it had rather than
             // spinning on sensor noise.
             if (orient.current() != h0::Orientation::FlatBack &&
                 orient.current() != h0::Orientation::FaceDown) {
-                hourglass.setGravity(gravityDir(filter.value()));
+                // Content space is a 180-degree rotation away from panel space
+                // when inverted, and that negates both axes. Handing the sim
+                // content-space gravity means it only ever sees the direction it
+                // was built for -- the simulation never learns the device can be
+                // turned over.
+                h0::Gravity down = gravityDir(filter.value());
+                if (inverted) down = negate(down);
+                face.setGravity(down);
             }
 
             if (ev != h0::MotionEvent::None) {
@@ -415,6 +433,18 @@ int main() {
             g_touchIrq = false;
             ++touchReads;
             touchRead = touch.read(tp);
+
+            // The frame is rotated for the inverted posture, so the panel the
+            // finger is touching no longer matches the coordinates the
+            // controller reports. Without this the picker's column lock picks
+            // the wrong wheel and every drag runs backwards -- and since
+            // `inverted` is latched from the last upright posture, it applies
+            // the moment anyone lays the device down to set a timer after
+            // turning it over.
+            if (touchRead && inverted && tp.pressed) {
+                tp.x = static_cast<int16_t>(board::lcd::WIDTH - 1 - tp.x);
+                tp.y = static_cast<int16_t>(board::lcd::HEIGHT - 1 - tp.y);
+            }
             if (!touchRead) ++touchFails;
             if (touchRead && tp.pressed) {
                 touchActive = true;
@@ -439,35 +469,14 @@ int main() {
             touchRead = true; // deliver the inferred release
         }
         if (touchRead) {
-            // A horizontal swipe cycles the face. The controller detects it
-            // itself, and it cannot be confused with a column drag because the
-            // columns only ever consume vertical movement.
-            // At most ONE face change per finger-down. The controller keeps
-            // reporting the same gesture code for as long as the finger is
-            // still there, so acting on the code directly fires it on every
-            // frame of the swipe and races through all three faces.
-            //
-            // The release must be handled in a branch the swipe test cannot
-            // also take, or clearing the latch and re-testing it on the same
-            // sample fires a second time on the way up.
-            const bool swipe = (tp.gesture == board::TouchGesture::SlideLeft ||
-                                tp.gesture == board::TouchGesture::SlideRight);
-
+            // The horizontal swipe used to cycle faces. With one face there is
+            // nothing to cycle, so the gesture is now free -- deliberately left
+            // unbound rather than given a second job, because a gesture with no
+            // acknowledgement path is worse than no gesture.
             if (!tp.pressed) {
-                faceChangedThisTouch = false;
                 colMin.reset();
                 colSec.reset();
                 activeCol = 0;
-            } else if (swipe && !faceChangedThisTouch && !app.settingPosture()) {
-                // Not while setting: a finger drifting sideways during a
-                // vertical drag latches a swipe, and preempting the picker
-                // mid-gesture stalls the drag and beeps for no visible reason
-                // (the picker is what is drawn while flat, so the face change
-                // cannot even be seen).
-                faceChangedThisTouch = true;
-                app.cycleFace();
-                buzzer.play(h0::Feedback::Resumed);
-                faceShownUntil = now + 1'200'000ull;
             } else if (app.settingPosture()) {
                 // Lock the column on touch-down. A finger drifts sideways during
                 // a vertical drag, and switching wheels mid-gesture would move
@@ -482,19 +491,21 @@ int main() {
                 const int dSec = colSec.update(tp.pressed && activeCol == 2, tp.y);
 
                 if (dMin != 0 || dSec != 0) {
-                    int64_t secs = static_cast<int64_t>(app.timer().duration() / 1'000'000ull);
-                    // Minutes carry into hours; seconds do NOT carry into
-                    // minutes. A seconds wheel that dragged the minutes along
-                    // would make the two columns fight each other.
-                    secs += static_cast<int64_t>(dMin) * 60;
-                    const int64_t curSec = ((secs % 60) + 60) % 60;
-                    int64_t newSec = curSec + dSec;
-                    newSec = ((newSec % 60) + 60) % 60;
-                    secs += newSec - curSec;
-
-                    if (secs < 0) secs = 0;
-                    if (secs > 9 * 3600) secs = 9 * 3600; // nine hours is plenty
-                    app.setDuration(static_cast<uint64_t>(secs) * 1'000'000ull, now);
+                    // Both wheels WRAP, and neither carries into the other. A
+                    // seconds wheel that dragged the minutes along would make
+                    // the two columns fight each other; a minutes wheel that
+                    // clamped would stick silently at the end of its travel.
+                    //
+                    // 100 minutes is the ceiling because the readout has five
+                    // cells and cannot grow. Making the wheel wrap there rather
+                    // than clamping somewhere higher keeps the dial and the
+                    // display honest about the same limit.
+                    const int64_t cur =
+                        static_cast<int64_t>(app.timer().duration() / 1'000'000ull);
+                    const int64_t mins = (((cur / 60 + dMin) % 100) + 100) % 100;
+                    const int64_t secs = (((cur % 60 + dSec) % 60) + 60) % 60;
+                    app.setDuration(static_cast<uint64_t>(mins * 60 + secs) * 1'000'000ull,
+                                    now);
                 }
             } else {
                 colMin.reset();
@@ -507,8 +518,8 @@ int main() {
         // to run at a fixed rate whatever the frame rate happens to be. Only
         // while the face is actually showing -- a simulation nobody can see is
         // pure battery cost.
-        if (app.face() == h0::FaceId::Hourglass && !app.settingPosture()) {
-            hourglass.tick(app.timer(), now);
+        if (!app.settingPosture()) {
+            face.tick(app.timer(), now);
         }
 
         const h0::Feedback tickFb = app.tick(now);
@@ -529,31 +540,14 @@ int main() {
             const uint32_t total =
                 static_cast<uint32_t>(app.timer().duration() / 1'000'000ull);
             h0::PickerState ps;
-            ps.hours = total / 3600;
-            ps.minutes = (total % 3600) / 60;
+            ps.minutes = total / 60;
             ps.seconds = total % 60;
             ps.minutesOffset = colMin.offsetPx();
             ps.secondsOffset = colSec.offsetPx();
             ps.activeColumn = activeCol;
             h0::SettingFace::renderAt(fb, ps);
         } else {
-            h0::IFace* face = &digits;
-            switch (app.face()) {
-                case h0::FaceId::Hourglass: face = &hourglass; break;
-                case h0::FaceId::SplitFlap: face = &splitflap; break;
-                case h0::FaceId::Digits:    face = &digits; break;
-            }
-            face->render(fb, app.timer(), now);
-            if (now < faceShownUntil) {
-                // Name it briefly after a change. Three faces with no label
-                // would leave the swipe feeling like it did something random.
-                const char* n = face->name();
-                const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, n);
-                onebit::fillRect(fb, static_cast<int16_t>(120 - w / 2 - 4), 244,
-                                 static_cast<int16_t>(w + 8), 13, WHITE);
-                onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
-                                       static_cast<int16_t>(120 - w / 2), 246, n, BLACK);
-            }
+            face.render(fb, app.timer(), now);
         }
 
         // A ringing alarm always goes to full brightness: it is the one moment
@@ -565,6 +559,11 @@ int main() {
             backlight = want;
             lcd.setBacklight(backlight);
         }
+
+        // Rotate the FINISHED frame rather than teaching the simulation, the
+        // picker, the font and the touch map that the device can be turned over.
+        // Everything upstream keeps working in a content space where up is up.
+        if (inverted) h0::rotate180(fb);
 
         lcd.pushDirty(fb, tracker.update(fb));
         lcd.waitIdle();

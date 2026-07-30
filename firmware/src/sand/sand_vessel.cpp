@@ -15,7 +15,15 @@ uint32_t SandVessel::next() {
 }
 
 void SandVessel::begin() {
-    open_ = makeVessel(kHoleHalf);
+    const SandGrid base = makeVessel(kHoleHalf);
+
+    // Physics gets the lintel SOLID; ink gets only its outline. Splitting the
+    // two roles here is the whole legibility mechanism -- see walls().
+    open_ = base;
+    fillLintelSolid(open_);
+
+    drawn_ = base;
+    drawLintelOutline(drawn_);
 
     // The shut vessel bricks up EVERY hole cell.
     //

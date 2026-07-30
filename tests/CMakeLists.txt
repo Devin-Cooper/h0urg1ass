@@ -31,9 +31,8 @@ add_library(h0_input STATIC
 target_include_directories(h0_input PUBLIC ${FW_SRC})
 
 add_library(h0_faces STATIC
-    ${FW_SRC}/faces/digits_face.cpp
-    ${FW_SRC}/faces/hourglass_face.cpp
-    ${FW_SRC}/faces/splitflap_face.cpp
+    ${FW_SRC}/faces/timer_face.cpp
+    ${FW_SRC}/render/raster_ops.cpp
     ${FW_SRC}/faces/setting_face.cpp
     ${FW_SRC}/sand/sand_sim.cpp
     ${FW_SRC}/sand/sand_render.cpp

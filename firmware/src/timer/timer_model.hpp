@@ -37,12 +37,26 @@ public:
     /// progress has no meaning a user would predict.
     void setDuration(uint64_t us) {
         duration_ = us;
+        ++gen_;
         elapsedBase_ = 0;
         anchor_ = 0;
         state_ = State::Idle;
     }
 
     uint64_t duration() const { return duration_; }
+
+    /// Bumped by every transition that means "back to full": setDuration,
+    /// start, reset, stop. NOT by pause, resume or expiry.
+    ///
+    /// This exists so a renderer holding physical state -- the sand charge --
+    /// can tell "this is a new run" from "this is the same run, still going",
+    /// which duration alone cannot express. A flip resets the timer without
+    /// touching the duration, so watching the duration missed it entirely and
+    /// left the sand drained while the clock ran from full.
+    ///
+    /// Deliberately not bumped on resume: that would refill the hourglass
+    /// mid-run after a pause, which is a worse bug than the one it fixes.
+    uint32_t generation() const { return gen_; }
     State state() const { return state_; }
 
     bool isRunning() const { return state_ == State::Running; }
@@ -54,6 +68,7 @@ public:
     /// A zero duration expires immediately rather than running forever.
     void start(uint64_t now) {
         if (state_ == State::Running) return;
+        ++gen_;
         elapsedBase_ = 0;
         anchor_ = now;
         state_ = (duration_ == 0) ? State::Expired : State::Running;
@@ -81,6 +96,7 @@ public:
     /// Legal from every state, including Expired, since flipping a spent
     /// hourglass is exactly how you start the next one.
     void reset(uint64_t now) {
+        ++gen_;
         elapsedBase_ = 0;
         anchor_ = now;
         state_ = (duration_ == 0) ? State::Expired : State::Running;
@@ -88,6 +104,7 @@ public:
 
     /// Back to full and NOT counting.
     void stop() {
+        ++gen_;
         elapsedBase_ = 0;
         anchor_ = 0;
         state_ = State::Idle;
@@ -147,6 +164,7 @@ public:
 
 private:
     uint64_t duration_ = 0;
+    uint32_t gen_ = 0;
     uint64_t elapsedBase_ = 0; ///< elapsed banked by previous run segments
     uint64_t anchor_ = 0;      ///< clock reading the current segment began at
     State state_ = State::Idle;

@@ -28,9 +28,8 @@ add_executable(h0urg1ass
     src/board/qmi8658.cpp
     src/board/buzzer.cpp
     src/board/cst816.cpp
-    src/faces/digits_face.cpp
-    src/faces/hourglass_face.cpp
-    src/faces/splitflap_face.cpp
+    src/faces/timer_face.cpp
+    src/render/raster_ops.cpp
     src/faces/setting_face.cpp
     src/input/orientation.cpp
     src/app/app.cpp

@@ -89,7 +89,7 @@ void SettingFace::renderAt(onebit::IFramebuffer& fb, const PickerState& s) {
 
     // Wheels first, then erase outside the band, then draw the furniture on top
     // of the clean edge.
-    column(fb, COL_M_CX, s.minutes, s.minutesOffset, 60);
+    column(fb, COL_M_CX, s.minutes, s.minutesOffset, 100);
     column(fb, COL_S_CX, s.seconds, s.secondsOffset, 60);
     maskOutsideBand(fb, BAND_TOP, BAND_BOT);
 
@@ -121,29 +121,10 @@ void SettingFace::renderAt(onebit::IFramebuffer& fb, const PickerState& s) {
     onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
                            static_cast<int16_t>(COL_S_CX - 9), 70, "SEC", BLACK);
 
-    // Hours only when there are any. An always-present "0 h" is noise on a timer
-    // that is usually minutes.
-    if (s.hours > 0) {
-        char buf[12];
-        std::snprintf(buf, sizeof(buf), "%lu h", static_cast<unsigned long>(s.hours));
-        const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, buf);
-        onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
-                               static_cast<int16_t>(120 - w / 2), 46, buf, BLACK);
-    }
-
     const char* hint = "DRAG TO SET";
     const int16_t hw = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, hint);
     onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
                            static_cast<int16_t>(120 - hw / 2), 240, hint, BLACK);
-}
-
-void SettingFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now) {
-    const uint32_t total = t.remainingSeconds(now);
-    PickerState s;
-    s.hours = total / 3600;
-    s.minutes = (total % 3600) / 60;
-    s.seconds = total % 60;
-    renderAt(fb, s);
 }
 
 } // namespace h0

@@ -8,10 +8,10 @@
 
 #include <1bit/core/framebuffer.hpp>
 
-#include "faces/digits_face.hpp"
-#include "faces/hourglass_face.hpp"
 #include "faces/setting_face.hpp"
-#include "faces/splitflap_face.hpp"
+#include "faces/timer_face.hpp"
+#include "render/raster_ops.hpp"
+#include "sand/sand_sim.hpp"
 #include "timer/timer_model.hpp"
 
 #include <cstdio>
@@ -57,38 +57,6 @@ int main(int argc, char** argv) {
     const std::string dir = (argc > 1) ? argv[1] : ".";
     Panel fb;
 
-    // Digits in every state the face can be in.
-    h0::DigitsFace digits;
-    h0::TimerModel t;
-    t.setDuration(12 * 60 * SEC);
-    digits.render(fb, t, 0);
-    emit(fb, dir, "digits-idle");
-
-    t.start(0);
-    digits.render(fb, t, 90 * SEC);
-    emit(fb, dir, "digits-running");
-
-    t.pause(90 * SEC);
-    digits.render(fb, t, 90 * SEC);
-    emit(fb, dir, "digits-paused");
-
-    t.resume(90 * SEC);
-    t.tick(13 * 60 * SEC);
-    digits.render(fb, t, 13 * 60 * SEC);
-    emit(fb, dir, "digits-expired");
-
-    // Split-flap, mid-tick and settled, so the flip animation is visible.
-    h0::SplitFlapFace flap;
-    h0::TimerModel ft;
-    ft.setDuration(12 * 60 * SEC);
-    ft.start(0);
-    flap.render(fb, ft, 0);
-    emit(fb, dir, "splitflap-running");
-    flap.render(fb, ft, 60 * SEC);        // a tick has just landed
-    emit(fb, dir, "splitflap-tick");
-    flap.render(fb, ft, 60 * SEC + 40'000ull); // mid-flip
-    emit(fb, dir, "splitflap-midflip");
-
     // The picker, at rest and mid-drag.
     { h0::PickerState p; p.minutes = 0;  p.seconds = 0;  h0::SettingFace::renderAt(fb, p); }
     emit(fb, dir, "pick-a-zero");
@@ -97,25 +65,55 @@ int main(int argc, char** argv) {
     { h0::PickerState p; p.minutes = 12; p.seconds = 30;
       p.minutesOffset = -13; p.activeColumn = 1; h0::SettingFace::renderAt(fb, p); }
     emit(fb, dir, "pick-c-dragging");
-    { h0::PickerState p; p.hours = 1; p.minutes = 45; p.seconds = 5;
+    { h0::PickerState p; p.minutes = 99; p.seconds = 5;
       p.activeColumn = 2; h0::SettingFace::renderAt(fb, p); }
-    emit(fb, dir, "pick-d-hours");
+    emit(fb, dir, "pick-d-99min");
 
-    // The simulated hourglass, at several points through a drain.
+    // The composed face -- readout over sand -- through a whole drain, plus the
+    // states and postures that only exist as a composite.
     {
         h0::TimerModel st;
-        st.setDuration(120 * SEC);
+        st.setDuration(300 * SEC);
         st.start(0);
-        h0::HourglassFace sand;
-        sand.restart(st, 1234);
+        h0::TimerFace face;
+        face.restart(st, 1234);
         const char* tags[] = {"a-full", "b-quarter", "c-half", "d-most", "e-done"};
-        const uint64_t marks[] = {0, 30 * SEC, 60 * SEC, 95 * SEC, 120 * SEC};
-        uint64_t t = 0;
+        const uint64_t marks[] = {0, 75 * SEC, 150 * SEC, 240 * SEC, 300 * SEC};
+        uint64_t now = 0;
         for (int m = 0; m < 5; ++m) {
-            while (t < marks[m]) { t += 33'333ull; sand.tick(st, t); }
-            sand.render(fb, st, t);
-            emit(fb, dir, std::string("sand-") + tags[m]);
+            while (now < marks[m]) { now += 33'333ull; face.tick(st, now); }
+            face.render(fb, st, now);
+            emit(fb, dir, std::string("composed-") + tags[m]);
         }
+
+        // Expired: the safe box inverts.
+        st.tick(400 * SEC);
+        face.render(fb, st, 400 * SEC);
+        emit(fb, dir, "composed-expired");
+    }
+
+    // Sand packed against the housing, which is what tilt and the inverted
+    // posture actually look like.
+    {
+        h0::TimerModel st;
+        st.setDuration(300 * SEC);
+        st.start(0);
+        h0::TimerFace face;
+        face.restart(st, 77);
+        face.setGravity(h0::Gravity::N);
+        uint64_t now = 0;
+        while (now < 90 * SEC) { now += 33'333ull; face.tick(st, now); }
+        face.render(fb, st, now);
+        emit(fb, dir, "composed-tilt-N");
+
+        face.setGravity(h0::Gravity::SE);
+        while (now < 150 * SEC) { now += 33'333ull; face.tick(st, now); }
+        face.render(fb, st, now);
+        emit(fb, dir, "composed-tilt-SE");
+
+        // And the whole frame as the inverted posture shows it.
+        h0::rotate180(fb);
+        emit(fb, dir, "composed-rotated");
     }
 
     return 0;

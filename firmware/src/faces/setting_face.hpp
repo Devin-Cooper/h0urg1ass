@@ -1,6 +1,10 @@
 #pragma once
 
-#include "faces/face.hpp"
+#include <1bit/core/framebuffer.hpp>
+
+#include <cstdint>
+
+#include "faces/layout.hpp"
 
 namespace h0 {
 
@@ -15,8 +19,7 @@ namespace h0 {
 /// picker, and drag distance maps linearly to value, so the control is legible
 /// before it is touched.
 struct PickerState {
-    uint32_t hours = 0;
-    uint32_t minutes = 0; ///< 0-59
+    uint32_t minutes = 0; ///< 0-99; the readout has five cells, so 99:59 is the ceiling
     uint32_t seconds = 0; ///< 0-59
 
     /// Pixel offset of each column within its current unit, for rendering a
@@ -28,10 +31,8 @@ struct PickerState {
     uint8_t activeColumn = 0;
 };
 
-class SettingFace : public IFace {
+class SettingFace {
 public:
-    void render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now) override;
-    const char* name() const override { return "setting"; }
 
     /// Draw an explicit picker state. Used by the golden tests and by the app,
     /// which owns the drag offsets.

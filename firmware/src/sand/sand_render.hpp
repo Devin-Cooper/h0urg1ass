@@ -2,6 +2,7 @@
 
 #include <1bit/core/framebuffer.hpp>
 
+#include "faces/layout.hpp"
 #include "sand/sand_grid.hpp"
 
 namespace h0 {
@@ -31,10 +32,53 @@ static_assert(ORIGIN_X % 8 == 0, "row expansion assumes a byte-aligned origin");
 inline constexpr int FLOOR_ROW = SandGrid::H / 2;
 inline constexpr int HOLE_CX = SandGrid::W / 2;
 
+/// The lintel: the housing the readout sits in, hung from the vessel ceiling.
+///
+/// It is a wall, not a decoration. Being part of the wall grid is what makes
+/// the readout legible at one bit: sand cannot enter a wall, so the interior
+/// is guaranteed empty, and `renderSand` -- which *assigns* bytes rather than
+/// or-ing them -- repaints it white every frame for free. Black glyphs on black
+/// sand stops being a drawing problem and becomes physically impossible.
+///
+/// **It hangs off the ceiling with no cell above it, and that is load-bearing.**
+/// The centreline attractor marches resting grains toward HOLE_CX. Any obstacle
+/// with free space above it that spans that column collects a tower of grains
+/// that can never leave -- destroying the one property the upper chamber has to
+/// have, which is that it empties. With the top row welded to the border, that
+/// failure mode does not exist.
+inline constexpr int LINTEL_CX0 = 23;
+inline constexpr int LINTEL_CX1 = 81;
+inline constexpr int LINTEL_CY0 = 1; ///< row 0 is the border itself
+inline constexpr int LINTEL_CY1 = 26;
+
+inline constexpr int16_t LINTEL_X = ORIGIN_X + SCALE * LINTEL_CX0;         // 62
+inline constexpr int16_t LINTEL_W = SCALE * (LINTEL_CX1 - LINTEL_CX0 + 1); // 118
+inline constexpr int16_t LINTEL_Y = ORIGIN_Y + SCALE * LINTEL_CY0;         // 18
+inline constexpr int16_t LINTEL_H = SCALE * (LINTEL_CY1 - LINTEL_CY0 + 1); // 52
+
+/// The interior: never drawn, never enterable, and exactly the readout's home.
+inline constexpr int16_t LINTEL_IN_X = LINTEL_X + SCALE;      // 64
+inline constexpr int16_t LINTEL_IN_W = LINTEL_W - 2 * SCALE;  // 114
+inline constexpr int16_t LINTEL_IN_Y = LINTEL_Y;              // 18 -- no top rail
+inline constexpr int16_t LINTEL_IN_H = LINTEL_H - SCALE;      // 50
+
+static_assert(LINTEL_CY0 == 1, "the lintel must hang off the ceiling, or it strands sand");
+static_assert(LINTEL_X >= safe::X && LINTEL_X + LINTEL_W <= safe::X + safe::W,
+              "lintel must lie inside the safe box");
+static_assert(LINTEL_X >= safe::CORNER_R && LINTEL_X + LINTEL_W <= 240 - safe::CORNER_R,
+              "lintel must clear both corner quadrants at every y");
+
 } // namespace sandgeom
 
 /// Build the vessel: border, floor, and a hole of the given half-width.
 SandGrid makeVessel(int holeHalfWidth);
+
+/// Fill the lintel solid. This is the PHYSICS shape -- what sand cannot enter.
+void fillLintelSolid(SandGrid& w);
+
+/// Draw the lintel's jambs and soffit only. This is the INK shape -- what the
+/// eye sees. The interior is deliberately absent so it renders white.
+void drawLintelOutline(SandGrid& w);
 
 /// Draw sand and vessel into `fb`.
 ///

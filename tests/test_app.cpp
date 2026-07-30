@@ -3,7 +3,6 @@
 #include "app/app.hpp"
 
 using h0::App;
-using h0::FaceId;
 using h0::Feedback;
 using h0::MotionEvent;
 using h0::TimerModel;
@@ -172,59 +171,6 @@ TEST_CASE("the dial is dead unless the device is flat") {
     a.onMotion(MotionEvent::Settled, 2 * MIN);
     CHECK(a.setDuration(30 * MIN, 2 * MIN));
     CHECK(a.timer().duration() == 30 * MIN);
-}
-
-TEST_CASE("the hourglass is only offered where it means something") {
-    App a;
-
-    SUBCASE("no duration") {
-        // Nothing to be a fraction of.
-        a.cycleFace();
-        CHECK(a.face() != FaceId::Hourglass);
-    }
-
-    SUBCASE("a short timer") {
-        dial(a, 5 * MIN, 0);
-        for (int i = 0; i < 3; ++i) {
-            a.cycleFace();
-            if (a.face() == FaceId::Hourglass) break;
-        }
-        CHECK(a.face() == FaceId::Hourglass);
-    }
-
-    SUBCASE("an hour is too long to watch sand drain") {
-        dial(a, 60 * MIN, 0);
-        for (int i = 0; i < 4; ++i) a.cycleFace();
-        CHECK(a.face() != FaceId::Hourglass);
-    }
-}
-
-TEST_CASE("a face that stops suiting the timer falls back rather than lying") {
-    // An hourglass frozen at full because the duration is an hour looks like a
-    // bug, so the selection degrades instead.
-    App a;
-    dial(a, 5 * MIN, 0);
-    for (int i = 0; i < 3; ++i) {
-        a.cycleFace();
-        if (a.face() == FaceId::Hourglass) break;
-    }
-    REQUIRE(a.face() == FaceId::Hourglass);
-
-    CHECK(a.setDuration(60 * MIN, 0));
-    CHECK(a.face() == FaceId::Digits);
-
-    // ...and comes back when it suits again, without the user re-choosing.
-    CHECK(a.setDuration(5 * MIN, 0));
-    CHECK(a.face() == FaceId::Hourglass);
-}
-
-TEST_CASE("cycling always lands on a usable face") {
-    App a;
-    dial(a, 60 * MIN, 0); // hourglass unavailable
-    for (int i = 0; i < 10; ++i) {
-        a.cycleFace();
-        CHECK(a.face() != FaceId::Hourglass);
-    }
 }
 
 TEST_CASE("a full session runs end to end") {

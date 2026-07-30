@@ -7,15 +7,6 @@
 
 namespace h0 {
 
-/// Which face to draw. An identifier rather than a face pointer, deliberately:
-/// it keeps the application logic free of any dependency on the graphics
-/// library, so this whole layer builds and tests on a host in milliseconds.
-enum class FaceId : uint8_t {
-    Hourglass,
-    Digits,
-    SplitFlap,
-};
-
 /// What the buzzer should say.
 ///
 /// Every motion command gets an acknowledgement, because none of these gestures
@@ -41,13 +32,6 @@ enum class Feedback : uint8_t {
 /// waving a board around.
 class App {
 public:
-    /// Longest duration the hourglass face is offered for.
-    ///
-    /// Beyond this the sand is not worth watching: the drain is imperceptible,
-    /// and for a one-hour timer the screen is asleep for most of the run
-    /// anyway. The other faces exist precisely so this one can have a range.
-    static constexpr uint64_t kHourglassMaxUs = 10ull * 60ull * 1'000'000ull;
-
     /// How long a finished alarm keeps sounding before it gives up.
     ///
     /// A device that beeps forever in an empty room is worse than one that
@@ -67,10 +51,6 @@ public:
     /// pocket rewrite the timer.
     bool setDuration(uint64_t us, uint64_t now);
 
-    /// Step to the next face that suits the current timer.
-    void cycleFace();
-
-    FaceId face() const;
     bool alarmSounding() const { return alarmOn_; }
 
     /// True when the device is laid flat, which is when the picker is live.
@@ -88,10 +68,7 @@ public:
     const TimerModel& timer() const { return timer_; }
 
 private:
-    bool faceSuits(FaceId f) const;
-
     TimerModel timer_;
-    FaceId face_ = FaceId::Digits;
     bool flat_ = false;
     bool alarmOn_ = false;
     uint64_t alarmSince_ = 0;
