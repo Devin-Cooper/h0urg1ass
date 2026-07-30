@@ -2,7 +2,7 @@
 
 How the device is driven: motion as the primary control surface, touch for setting values.
 
-**Target hardware:** Waveshare RP2350-Touch-LCD-1.69. QMI8658C IMU at I²C address `0x6A` on
+**Target hardware:** Waveshare RP2350-Touch-LCD-1.69. QMI8658C IMU at I²C address **`0x6B`** on
 `i2c1` (400 kHz, shared with a CST816-family touch controller at `0x15` and a PCF85063A RTC at
 `0x51`), IMU `INT1` → GPIO23, `INT2` → GPIO24 [SCH][WIKI]. Display is a 240 × 280 IPS panel with
 physically rounded corners.

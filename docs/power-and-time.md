@@ -187,7 +187,7 @@ going to be powered down. Do not use it as a clock.**
 | Survives MCU power-down | **Yes** | No | Yes |
 | Can wake the MCU from P1.x | **Yes** — /INT → GPIO18, any GPIO 0-47 is a valid `PWRUP` source (`SOURCE` is a 6-bit field) `[RP Table 513]` | n/a | Yes (alarm wakeup) |
 | Accuracy over 25 min | ~45 ms *(est.)* | 15 ms | **±22 s at best** |
-| Costs a bus transaction | Yes, shares i2c1 with touch (0x15) and IMU (0x6A) | No | No |
+| Costs a bus transaction | Yes, shares i2c1 with touch (0x15) and the IMU at **0x6B** — the schematic straps SA0 to GND and so reads as 0x6A, but the part answers on 0x6B (scanned on hardware). Probe both. | No | No |
 
 The reasoning:
 
@@ -819,8 +819,9 @@ the error drops to the ±2 % reference term.
   lags the battery by ~65 ms, so load transients are never visible — which is fine, they are
   not wanted.)
 - **No external reference exists on this board.** `ADC_AVDD` is the same 3V3 rail that
-  carries the **PWM-chopped backlight** (up to ~40 mA at ~29.7 kHz, or ~39.6 kHz at the
-  200 MHz overclock). Sample across an integer number of PWM periods.
+  carries the **PWM-chopped backlight** — up to ~40 mA at **122.07 kHz** (`clk_sys` 125 MHz ÷
+  clkdiv 4.0 ÷ 256 counts). One period is 8.2 µs, so any burst longer than ~100 µs already
+  averages a dozen of them and no explicit synchronisation is needed.
 - **RP2350-E9 does not apply to GPIO29 here.** E9 needs the pad input buffer enabled;
   `adc_gpio_init(29)` disables it along with the pulls. (E9 also does not apply to GPIO14 or
   GPIO18, both of which are pulled *up*.)
@@ -845,8 +846,11 @@ uint16_t bat_read_raw(void) {
 }
 ```
 
-- **256 samples in 512 µs** naturally averages ≥15 backlight PWM cycles, killing the rail
-  ripple without any synchronisation logic.
+- **A 32-sample average takes ~64 µs and spans ~8 backlight PWM periods** at 122 kHz, which
+  is already enough to kill the rail ripple without any synchronisation logic. Lengthening
+  the burst to 256 samples (512 µs, ~62 periods) buys a little more averaging and costs
+  nothing; the shipped reader uses 32, plus 8 discarded conversions after the channel
+  select rather than 2.
 - Sample **once per second** while the screen is on; once per wake while it is off. There is
   nothing to gain from faster.
 - Feed an **IIR filter with α = 1/16** across those one-per-second readings. The cell voltage
@@ -955,7 +959,9 @@ whole board asleep**. Concretely, for one 25-minute Pomodoro:
 | Behaviour | Draw | Energy for 25 min | % of a 500 mAh cell |
 |---|---|---|---|
 | Screen on at 100 % | ~58 mA | **24 mAh** | **4.8 %** |
-| Screen on at 15 % | ~14 mA | 5.8 mAh | 1.2 % |
+| **Screen on at the 25 % default** | **~28 mA** | **12 mAh** | **2.3 %** |
+| Screen on at 14 % (the idle level, MCU still at 125 MHz) | ~23 mA | 9.6 mAh | 1.9 % |
+| Screen on at 14 % with the 48 MHz clock-down *(not built)* | ~13 mA | 5.5 mAh | 1.1 % |
 | Screen off, counting | ~0.32 mA | **0.13 mAh** | **0.03 %** |
 
 **A 180× difference.** The entire power design of this product is one decision: *how long
@@ -1041,13 +1047,18 @@ component figures in §8.2.*
 
 | State | Screen | CPU | Draw | Runtime | Enter when | Exit when |
 |---|---|---|---|---|---|---|
-| **ACTIVE** | on, 60–100 % BL | 150 MHz | **~58 mA** | ~8.6 h | Touch, PWR press, alarm firing, or wake from any state | 20 s with no touch → DIMMED |
-| **DIMMED** | on, 10–15 % BL, ST7789 IDMON + partial updates | 48 MHz, WFI between frames | **~14 mA** | ~36 h | 20 s idle in ACTIVE | Touch/PWR → ACTIVE; 60 s more idle → SCREEN_OFF |
+| **ACTIVE** | on, BL 64/256 = **25 %** | 125 MHz | **~28 mA** | ~18 h | Touch, an IMU motion event, PWR press, alarm firing, or wake from any state | 20 s with neither touch nor motion → DIMMED. A sounding alarm holds ACTIVE: it is the one moment the device is trying to be seen from across a room. |
+| **DIMMED** | on, BL 36/256 = **14 %**; ST7789 IDMON + partial updates *(not built)* | 48 MHz, WFI between frames *(not built)* | **~23 mA as built, ~13 mA once the clock-down lands** | ~21.5 h → ~38 h | 20 s idle in ACTIVE | Touch/PWR/motion → ACTIVE; 60 s more idle → SCREEN_OFF *(not built)* |
 | **SCREEN_OFF (counting)** | off (SLPIN, BL 0) | POWMAN **P1.0**, all SRAM retained | **~0.32 mA** | ~65 days | 60 s idle in DIMMED **while a timer is running** | RTC /INT (GPIO18, level-low) → ACTIVE; PWR (GPIO14) → ACTIVE; AON backup alarm; IMU wake-on-motion if enabled |
 | **OFF** | off | unpowered | **~32 µA** | ~1.8 yr *(self-discharge dominates)* | Long-press PWR, **or** 5 min idle with **no** timer running, **or** V_batt < 3.45 V | PWR press (hardware, via D1 → Q3) |
 
-Draw breakdowns: ACTIVE = 40 (backlight) + 16 (MCU/SPI/DMA) + 1.5 (touch) + 0.09 (LDO Iq) +
-0.032 (battery-side). DIMMED = 6 + 6 + 1.5 + 0.09 + 0.032. SCREEN_OFF = 0.166 (P1.0,
+Draw breakdowns: ACTIVE = 10 (backlight at the 64/256 default) + 16 (MCU/SPI/DMA) + 1.5
+(touch) + 0.09 (LDO Iq) + 0.032 (battery-side) = ~28 mA. At full duty the same state is
+~58 mA and ~8.6 h; dropping the default from 200 to 128 is what buys the extra 4.5 h, and
+it costs nothing legible because a white-on-black frame lights so little of the glass.
+DIMMED *as built* = 5.6 + 16 + 1.5 + 0.09 + 0.032 = ~23 mA (~21.5 h): the clock-down and
+the WFI in the row above are not implemented, so the MCU term does not fall. DIMMED once
+they are = 5.6 + 6 + 1.5 + 0.09 + 0.032 = ~13 mA. SCREEN_OFF = 0.166 (P1.0,
 includes flash) + 0.090 (LDO) + 0.030 (touch asleep, est.) + 0.005 (IMU down, est.) + 0.032
 (ETA6096 + divider). OFF = 0.020 (ETA6096 `[ETA]`) + 0.0123 (divider, calc) + ~0.001 (FET
 leakage, est.).
@@ -1169,10 +1180,12 @@ stateDiagram-v2
     ±5 % each — up to ±7 % ratio error, ~±9 % total, ~±0.33 V at 3.7 V. A per-unit
     one-point gain calibration is mandatory. RP2350's INL/DNL are literally "Details to
     follow" in the datasheet `[RP §12.4.5]`; RP2040-E11 is fixed.
-11. **The backlight** (~40 mA at 100 %, from R1 = 10 Ω; corroborated by the module wiki's
-    41.3 mA) is ~70 % of active draw. A 25-minute timer costs 24 mAh screen-on versus
-    0.13 mAh screen-off-counting — a 180× difference. Screen-on time is the entire power
-    design.
+11. **The backlight** (~40 mA at 100 % duty, from R1 = 10 Ω; corroborated by the module
+    wiki's 41.3 mA) is the largest single load, but the default is 64/256 = 25 %, so as
+    shipped it is ~10 mA of a ~28 mA active total — 36 %, and ~70 % only at full duty. A
+    25-minute timer costs ~16 mAh screen-on at the default (24 mAh at full) versus 0.13 mAh
+    screen-off-counting — 120× and 180× respectively. Screen-on time is still the entire
+    power design; halving the default duty was the cheapest win available and it was taken.
 12. **Flash:** 4 kB sectors, min 100 k P/E cycles, and a 400 ms worst-case erase with XIP
     stalled `[W25]`. The stall, not the wear, is the constraint. Use one 256-byte record per
     page, 16 per sector, two sectors alternating (3.2 M writes), commit only after 2 s of

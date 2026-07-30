@@ -1,6 +1,6 @@
 # h0urg1ass
 
-A gesture-driven multi-use timer for the [Waveshare RP2350-Touch-LCD-1.69][board],
+A gesture-driven countdown timer for the [Waveshare RP2350-Touch-LCD-1.69][board],
 rendered entirely in one bit.
 
 > `h0urg1ass` — hourglass, with the two characters that could be bits spelled as bits.
@@ -10,19 +10,46 @@ rendered entirely in one bit.
 
 A 1.69″ pocket timer you operate mostly by **moving it**. Flip it, set it down, pick it
 up — the IMU is the primary control surface, because a 240×280 round-cornered screen has
-no room for a control panel. Touch is reserved for the things gestures are bad at: dialling
-in a duration and changing settings. The buzzer confirms that a gesture registered, so you
-are never left guessing whether the device saw you.
+no room for a control panel. Touch is reserved for the one thing gestures are bad at:
+dialling in a duration, on two spinner columns that are live only while it lies flat. The
+buzzer confirms that a gesture registered, so you are never left guessing whether the device
+saw you.
 
 The display is a colour TFT, but the whole UI is drawn into a **1-bit framebuffer** and
 expanded on the way to the glass. That is a deliberate aesthetic constraint, not a hardware
 limit — see [Visual language](docs/visual-language.md).
 
+## What it does
+
+Stand it up to start. Lay it flat to pause, and to dial a new duration. Turn it over to reset
+to full and run again — the gesture a real hourglass already has. Set it face down to silence
+a ringing alarm.
+
+There is one screen: a split-flap `MM:SS` readout housed in a lintel, over a falling-sand
+simulation. The board carries the number; the sand carries the feeling of the time passing.
+
+The readout stays legible at one bit because **its housing is a wall in the sand simulation** —
+sand cannot be inside it, so the interior is repainted clean every frame at no cost. Black
+glyphs on black sand is not a drawing problem to solve but a state that cannot occur.
+
+The display runs white on black, using the panel's own `INVON`/`INVOFF`. The framebuffer
+convention is untouched: `BLACK` still means ink everywhere in the code.
+
 ## Status
 
-**Pre-implementation.** The repository currently holds the hardware brief, the graphics
-library survey, and the design docs needed to start work. No firmware yet, and the board has
-not been brought up. See [the issue tracker](../../issues) for the backlog.
+**Running on hardware.** Bring-up is recorded in [docs/hardware.md](docs/hardware.md): the
+display driven end to end at 62.5 MHz — 19.1 ms for a full 240×280 frame — touch at `0x15`,
+IMU at `0x6B`, RTC at `0x51`, corner radius measured at ≈44 px.
+
+Everything that does not need a board is tested on the host: 91 cases over the timer model,
+the orientation classifier, the app state machine, the drag columns and the sand, with the
+faces pinned to braille goldens.
+
+Known gaps: one sand tick costs ~4.5 ms, about 13% of the CPU at the 30 Hz the simulation
+runs at, and the word-parallel fall step the bit-packed grid was laid out for is not written.
+The duration ceiling is 99:59, because the flap board has five fixed-raster cells and cannot
+grow. Off-state battery current has never been put on a meter. See
+[the issue tracker](../../issues) for the rest.
 
 ## Hardware
 
@@ -33,7 +60,7 @@ not been brought up. See [the issue tracker](../../issues) for the backlog.
 | Flash | 16 MB external QSPI NOR (W25Q128JVSIQ) |
 | Display | 1.69″ IPS TFT, 240×280, ST7789V2, RGB565 over write-only SPI1, **~44 px rounded corners** |
 | Touch | CST816-family, I²C `0x15`, **single contact only** + hardware gestures |
-| IMU | QMI8658C 6-axis, I²C `0x6A`, INT1/INT2 on GPIO23/24 |
+| IMU | QMI8658C 6-axis, I²C **`0x6B`** — the schematic straps SA0 low and predicts `0x6A`; the as-built board answers only at `0x6B`. INT1/INT2 on GPIO23/24 |
 | RTC | PCF85063A, I²C `0x51` — **no backup cell fitted**, so wall-clock does not survive power-off |
 | Feedback | Buzzer on GPIO2 (PWM1 A), PWM backlight on GPIO25 |
 | Power | Li-ion + ETA6096 charger; **firmware must assert GPIO15 to stay powered on battery** |
@@ -68,8 +95,25 @@ git submodule update --init --recursive
 
 ## Building
 
-Requires the [pico-sdk](https://github.com/raspberrypi/pico-sdk) (2.x), CMake 3.16+, and
-`arm-none-eabi-gcc`. Build instructions land with the first firmware milestone.
+Requires the [pico-sdk](https://github.com/raspberrypi/pico-sdk) (2.x), CMake 3.16+, Ninja,
+`arm-none-eabi-gcc` and `picotool`.
+
+```sh
+export PICO_SDK_PATH=~/pico-sdk   # firmware/flash.sh assumes this if unset
+firmware/flash.sh                 # build, flash, run
+firmware/flash.sh --monitor       # ... and stream the USB console
+firmware/flash.sh --build-only    # compile only, do not touch the board
+```
+
+`flash.sh` asks the running firmware to reboot into BOOTSEL over its own USB interface, so
+reflashing never needs the BOOT button — which is why `main()` idles three seconds before it
+touches any hardware. If a build hangs before USB enumerates, BOOT + RESET is the way back.
+
+The host tests need none of that — no board, no cross-compiler:
+
+```sh
+cmake -S tests -B tests/build && cmake --build tests/build && ./tests/build/h0urg1ass_tests
+```
 
 ## Documentation
 

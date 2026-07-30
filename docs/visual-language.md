@@ -28,10 +28,12 @@ Section 4 maps every rule onto a real library symbol or flags it as new upstream
 | Vendor firmware: [basic/GUI demo](https://files.waveshare.com/wiki/RP2350-Touch-LCD-1.69/RP2350-Touch-LCD-1.69-Code.zip), [LVGL demo](https://files.waveshare.com/wiki/RP2350-Touch-LCD-1.69/RP2350-Touch-LCD-1.69-LVGL.zip) | Init sequence, the +20 GRAM offset, unconditional `INVON`, backlight PWM setup, SPI clock choices | Vendor primary, but **out of spec in places** — see §2 and §4.2 |
 | `third_party/1bit-display`, headers under `include/1bit/` | The API surface named throughout §4 | Primary. **The headers are authoritative, not the library's prose documentation** — the two disagree in at least one place, flagged in §4.1 |
 
-The board itself has **not been hardware-validated with this library**. Every timing figure below
-(17.2 ms full frame, 1.47 ms text line, ~53 Hz refresh) is arithmetic from sourced clock numbers,
-not measurement. Figures that need an eyeball or a scope are flagged where they appear and
-collected in §8.
+The board now runs this library: `firmware/src/board/st7789_1in69.cpp` is the driver, and the
+corner clip, the safe inset and the polarity have all been checked on the glass. What has *not*
+been measured is the wire — 17.2 ms full frame, 1.47 ms text line and ~53 Hz refresh are still
+arithmetic from sourced clock numbers, with nothing on a scope. Figures that have been measured on
+the part (one sand tick at ~4.5 ms, a ~30 Hz main loop at 125 MHz clk_sys) are stated where they
+appear; what remains open is collected in §8.
 
 ---
 
@@ -213,7 +215,7 @@ grayscale is the canonical way of pressing up against them. Corollaries he state
 
 | | Playdate | RP2350-Touch-LCD-1.69 | Consequence |
 |---|---|---|---|
-| Panel tech | Sharp **reflective** memory LCD, no backlight | **Transmissive IPS TFT, PWM LED backlight** (GPIO25, 0–100%, ~29.7 kHz at the stock 150 MHz clock) | Contrast is high, constant, and ambient-independent. **White is emissive, not paper.** |
+| Panel tech | Sharp **reflective** memory LCD, no backlight | **Transmissive IPS TFT, PWM LED backlight** (GPIO25, 8-bit duty 0–255, ~122 kHz at slice-4 clkdiv 4 with clk_sys at 125 MHz) | Contrast is high, constant, and ambient-independent. **White is emissive, not paper.** |
 | Pixel flip artefact | Strobes on flip; visible when scrolling dither | ST7789V2 — no such transient | Pope's *hardware* justification for pixel-persistence **does not apply**. The *perceptual* crawl rule still does. |
 | Resolution | 400×240 = 96,000 px | **240×280 = 67,200 px** (portrait) | 70% of the pixels, and **portrait**. Nothing about a 400×240 landscape composition transfers. |
 | Pixel pitch | ~0.147 mm (~173 ppi) | **0.11655 mm (~218 ppi)** | Pixels here are **0.79× the linear size**. Everything drawn is ~21% smaller in the hand. |
@@ -222,7 +224,7 @@ grayscale is the canonical way of pressing up against them. Corollaries he state
 | Colour | None | **`AttributeMap` per-8×N-cell ink/paper over RGB565** | A semantic colour channel Pope does not have. |
 | Refresh / sync | 50 Hz, hardware-synced | **~53 Hz panel; no TE line wired** | Flushes cannot be synced to scan-out. A full-frame push (17.2 ms at 62.5 MHz) races an 18.9 ms scan → visible tearing. |
 | Wire cost | Native 1-bit | **No wire format below 12 bpp**; RGB565 = 16× expansion, 134,400 B/frame | Bus time, not CPU, is the frame budget. Partial updates are the design, not the optimisation. |
-| Polarity | — | `INVON` mandatory; omit it and black/white silently swap | A polarity bug and an ink/paper swap look identical on a bench. |
+| Polarity | — | The panel needs `INVON` to render framebuffer `BLACK` as dark; the UI wants the opposite, so the two are XORed and the shipping device sends `INVOFF` | One byte on the wire, nothing per frame. A polarity bug and an ink/paper swap still look identical on a bench. |
 
 The refresh figure comes from the vendor init writing FRCTRL2 (0xC6) = 0x13, which the ST7789V2
 datasheet's table maps to 53 Hz in normal mode; with PORCTRL (0xB2) = 0x0B,0x0B,0x00,0x33,0x35 the
@@ -241,10 +243,15 @@ dither reads as *texture* there. On a backlit IPS at full duty, white pixels are
 sources with a hard on/off edge and a very high contrast ratio. Two consequences:
 
 1. **Large white fields glare.** A full-screen `solid(false)` on a white-paper polarity is a torch
-   in a dark room. **Default to light-on-dark**: set `PixelFormat::ink` = white, `paper` = black, so
-   the 1-bit "ink" is the *lit* thing. The 1-bit design is unchanged — polarity lives in exactly one
-   place in the HAL — but the entire perceptual character flips from "printed page" to "instrument
-   panel," and the latter is what this hardware wants. **Unverified on hardware** (§8).
+   in a dark room. **The default is light-on-dark, and it is a panel mode, not a buffer change:**
+   `lcd.setInverted(true)` XORs the UI's preference against the panel's own `INVON` requirement, so
+   the device sends `INVOFF` and the framebuffer convention is untouched — `BLACK` still means ink
+   in every drawing call. One byte on the wire, nothing per frame; inverting the buffer instead is a
+   pass over 8,400 bytes a frame to reach a state the panel already has as a mode. The perceptual
+   character flips from "printed page" to "instrument panel," which is what this hardware wants, and
+   it also changes the power sum: on a mostly-dark frame a bright backlight mostly lights the parts
+   meant to be dark, which is why the active level is 64/255 rather than full (R23). Confirmed on
+   hardware.
 2. **Dither shimmer is worse, not better.** Higher contrast between adjacent pixels plus a finer
    pitch (218 ppi) puts a 50%-coverage 1-px pattern right at the eye's scintillation threshold.
    Pope's "use it as little as possible" tightens rather than relaxes here.
@@ -379,12 +386,20 @@ under it.
 **R19 — Safe box: inset 16 px.** The 44 px corner radius clips the diagonal; the minimum diagonal
 clearance is `44·(1 − 1/√2) ≈ 12.9 px`. Use **16 px** for headroom. **Content rect =
 `Rect{16, 16, 208, 248}`.** With `TERM_8X12` (cell 8×13) that is a **26 × 19 character grid**.
-Nothing readable or tappable goes outside it. The 44 px figure is arithmetic from the module
-drawing's R5.15 mm divided by the 0.11655 mm pitch, not a measurement of this board (§8).
+Nothing readable or tappable goes outside it. The 44 px radius was confirmed on hardware, and the 16 px inset was checked fully visible with
+margin; the constants are `h0::safe` in `firmware/src/faces/layout.hpp`. Note the clip is a rounded
+*rectangle*: inside a corner quadrant the visible region is a disc of radius 44 centred 44 px
+inwards from the corner, not the complement of a disc on the corner point — so anything spanning
+x ∈ [44, 196] clears both quadrants at every y, and wide elements can be checked with that one test.
 
-**R20 — Backgrounds bleed to the full 240×280.** Patterns and fills should run edge to edge so the
-physical corners read as a deliberate bezel, not a clipping accident. Only *content* respects the
-safe box. The sibling module wiki warns plainly that "due to the four round corners, some parts of
+**R20 — Bleed a background to the full 240×280 only when it is paper.** Under light-on-dark, paper
+is the unlit state, so a frame that simply stops at the safe box already reads as a deliberate
+bezel at zero cost — which is what the timer face does: `fb.clear(WHITE)`, then a vessel drawn
+exactly on the 16 px inset. Running *ink* to the edges costs the opposite: about 1,800 lit pixels
+land under the corner clip where nobody can see them, and the corner-clearance check stops being a
+guard and becomes noise. That is why `invertSafeBox` inverts the safe box rather than the panel.
+The sibling module wiki warns plainly that "due to the four round corners, some parts of the input
+images may not be displayed." The sibling module wiki warns plainly that "due to the four round corners, some parts of
 the input images may not be displayed."
 
 **R21 — Touch targets ≥ 40 px.** 40 px = 4.7 mm. The CST816 register map defines `FingerNum @0x02`
@@ -393,16 +408,22 @@ single finger: no pinch, no two-finger gestures. (The CST816S datasheet prose me
 and real two-point gestures," but that refers to gesture *sensing*, not to two reported
 coordinates.)
 
-**R22 — Default polarity is light-on-dark.** `PixelFormat` ink = white, paper = black. **Unverified
-on hardware** — this is the one rule here that genuinely needs an eyeball before the UI is built
-around it.
+**R22 — Default polarity is light-on-dark, set on the panel, not in the buffer.**
+`lcd.setInverted(true)`; the driver XORs that against `PanelGeometry::invert` and sends `INVOFF`.
+`PixelFormat` stays `rgb565(ink = 0x0000, paper = 0xFFFF)` and `BLACK` still means ink in every
+drawing call, so no other rule in this document changes sense. Never invert the framebuffer to get
+this: it is a pass over 8,400 bytes per frame to reach a state the panel already has as a mode.
 
-**R23 — Backlight is a design channel.** 100% for active interaction, 20–30% for idle or night,
-ramped with `AnimationTimer` + `easeInOut` over 200–400 ms. Treat it as the global value axis the
-framebuffer does not have. The hardware is a single white LED string driven active-high from GPIO25
-through a DMG1012T-7 N-channel MOSFET; the vendor setup uses PWM slice 4 channel B with
-`pwm_set_wrap(slice, 100)` and `pwm_set_clkdiv(slice, 50)`, making duty a plain 0–100 integer
-percent.
+**R23 — Backlight is a design channel, and the biggest one on battery.** It is roughly 70% of
+active draw — about 40 mA at full against ~16 mA for everything else — so how long it stays bright
+is worth more than every other power optimisation combined. Shipping levels are **64/255 active,
+36/255 after 20 s idle**, stepped rather than ramped, with a ringing alarm forcing full because
+that is the one moment the device is trying to be seen across a room. Half brightness is not a
+compromise under light-on-dark: a bright backlight on a mostly-dark frame mostly lights the parts
+meant to be dark. Dimming rather than blanking keeps the timer glanceable. The hardware is a single
+white LED string driven active-high from GPIO25 through a DMG1012T-7 N-channel MOSFET; the driver
+runs PWM slice 4 channel B at `wrap = 255`, `clkdiv = 4`, so `setBacklight` takes a plain 0–255
+level. (The vendor setup uses wrap 100 and clkdiv 50 — do not carry its 0–100 convention across.)
 
 ### 3.6 Colour (AttributeMap)
 
@@ -487,20 +508,23 @@ application side.
 
 ### 4.2 Needs new work in the library
 
-**N1 — There is no driver for this board.** `platform/pico-example/` targets the
-**RP2350-Touch-LCD-2.8**, a different panel geometry. A `WindowedDisplayDriver` subclass is needed,
-supplying `setWindow` / `writePixels` / `stripBuffer` / `clear`, plus:
+**N1 — The driver exists, in this repo, not in the library.** `platform/pico-example/` still
+targets the **RP2350-Touch-LCD-2.8**, a different panel geometry, so this board's
+`WindowedDisplayDriver` subclass lives at `firmware/src/board/st7789_1in69.{hpp,cpp}`, supplying
+`setWindow` / `writePixels` / `stripBuffer` / `clear`. What it settled, and what it did not:
 
 - `PanelGeometry::st7789_240x280_1in69()` and `PixelFormat::rgb565()` in the constructor;
 - **+20 on RASET in portrait** — the offset exists because the 240×320 GRAM centres a 280-row
   panel, `(320 − 280)/2 = 20`. In landscape the +20 **moves to CASET** instead;
-- unconditional `INVON` (0x21) — every vendor driver sends it; omit it and black and white silently
-  swap;
+- polarity as `PanelGeometry::invert` XOR the UI's `setInverted()` — this panel needs `INVON`
+  (0x21) to render `BLACK` as dark, and the light-on-dark UI wants the other state, so the shipping
+  device sends `INVOFF` (0x20). Keep the two terms separate: collapsing them makes a taste decision
+  read as a hardware quirk to whoever next reads the init sequence;
 - **ping-pong strip buffers** re-acquired per chunk. `stripBuffer` is called once per chunk and the
   buffer must be safe to overwrite the moment it returns, so a single reused buffer with async DMA
   produces sparse static that *does not change when the SPI clock is halved*;
 - `caps().backlight = true` and a real `setBacklight` override (PWM slice 4 channel B on GPIO25,
-  wrap 100, so duty is a plain 0–100);
+  wrap 255 at clkdiv 4, so duty is an 8-bit level and the PWM lands at ~122 kHz);
 - `setLowPower` → `IDMON` / `IDMOFF` (0x39 / 0x38);
 - SCK ≤ **62.5 MHz** — the controller's TSCYCW (serial clock cycle, write) minimum of 16 ns. The
   vendor LVGL demo runs SCK at 100 MHz, roughly 1.6× over that spec, and the MicroPython driver at
@@ -607,7 +631,7 @@ no bit reversal is needed.
 A concrete starting point that satisfies every rule above.
 
 ```
-Polarity      light-on-dark: PixelFormat ink = white, paper = black  (R22)
+Polarity      light-on-dark: lcd.setInverted(true); PixelFormat unchanged (R22)
 Framebuffer   Framebuffer<240, 280>                                   (8400 B)
 Corner        per-row [xmin,xmax] table, r = 44                       (N3, 560 B)
 Safe box      Rect{16, 16, 208, 248} -> 26 x 19 cells at TERM_8X12    (R19)
@@ -619,7 +643,7 @@ Type on tex.  renderStringWithHalo, haloColor = paper                 (R11, R18)
 Accent fill   bayer(128, 4), content-anchored offsets                 (R3, R5)
 Colour        AttributeMap(240, 280, cellHeight = 13), one accent     (R25, R26)
 Transitions   TransitionKind::Wipe, 200 ms, easeInOut                 (R8)
-Idle          backlight 100% -> 25% over 400 ms, easeInOut            (R23)
+Idle          backlight 128 -> 36 of 255 after 20 s, stepped; alarm forces 128 (R23)
 Update        DirtyRectTracker; full push only on scene change        (R10)
 Review        braille goldens; read the diff                          (Section 4.1)
 ```
@@ -634,8 +658,9 @@ Review        braille goldens; read the diff                          (Section 4
 - [ ] No text smaller than `TERM_6X9`; no anti-aliased or dithered glyphs; one font pairing.
 - [ ] No fades implemented as density ramps.
 - [ ] Typical frame pushes a dirty rect, not a full frame.
-- [ ] `INVON` sent; polarity verified against a 1-px checkerboard canary (there is no MISO — the
-      panel cannot be read back).
+- [ ] Polarity command matches `PanelGeometry::invert` XOR `setInverted()` — white-on-dark on this
+      panel means `INVOFF` — and was checked by eye against a 1-px checkerboard canary (there is no
+      MISO; the panel cannot be read back).
 - [ ] `markAllDirty()` after any palette change.
 - [ ] Braille goldens regenerated and the diff actually read.
 
@@ -649,9 +674,11 @@ Review        braille goldens; read the diff                          (Section 4
 2. Rounded corners of ~44 px radius physically clip the framebuffer. Minimum diagonal clearance is
    `44·(1 − 1/√2) ≈ 12.9 px`; use a 16 px inset. Content rect = `Rect{16,16,208,248}` = 26 × 19
    cells at `TERM_8X12`. Backgrounds still bleed full-frame.
-3. The panel is **backlit and transmissive**, not reflective: white is emissive, not paper. Default
-   to light-on-dark (`PixelFormat` ink = white, paper = black) or a full-white screen is a torch.
-   Polarity lives in exactly one place, so the 1-bit design itself is unchanged.
+3. The panel is **backlit and transmissive**, not reflective: white is emissive, not paper. The
+   default is light-on-dark, done as a panel mode — `setInverted(true)`, XORed against the panel's
+   own `INVON` requirement — so the framebuffer convention is untouched and `BLACK` still means ink
+   everywhere in the code. A full-white screen would be a torch; a mostly-dark one is also the
+   cheaper backlight, which is why the active level is 64/255.
 4. Pope's pixel-persistence rule was justified by Sharp memory-LCD strobing, which the ST7789V2 does
    **not** have. Keep the rule anyway — perceptual dither crawl is universal, and is worse at 218 ppi
    with IPS contrast.
@@ -672,10 +699,11 @@ Review        braille goldens; read the diff                          (Section 4
 9. No wire format below 12 bpp exists. RGB565 = 16× expansion = 134,400 B/frame = 17.2 ms at the
    safe 62.5 MHz SCK ceiling, against an 18.9 ms panel scan, with **no tearing-effect line wired**.
    Full-frame pushes tear; `DirtyRectTracker` partial updates are the design, not an optimisation.
-10. No driver exists for this board — `platform/pico-example` targets the 2.8-inch panel.
-    `PanelGeometry::st7789_240x280_1in69()` exists; the `WindowedDisplayDriver` subclass, the
-    mandatory +20 RASET offset in portrait, unconditional `INVON`, ping-pong DMA strip buffers and
-    the GPIO25 PWM backlight override all still need writing.
+10. The board's driver lives in this repo, not the library — `firmware/src/board/st7789_1in69.cpp`;
+    `platform/pico-example` still targets the 2.8-inch panel. `PanelGeometry` carries the +20 offset
+    as data so it is debugged once, the polarity command is `INVON` XOR the UI's `setInverted()`,
+    the strip buffers ping-pong, and `setBacklight` drives GPIO25 PWM at wrap 255. Still unwritten:
+    `setLowPower` → IDMON/IDMOFF (0x39 / 0x38).
 11. `AttributeMap` gives a per-8×N-cell colour channel the Playdate has no equivalent of, and
     dithering inside a coloured cell yields real tints for free — but a pen costs +28.8% on draw and
     +11.2% on push, `expandRectWithAttributes` carries colour for **RGB565 only**, a palette change
@@ -691,10 +719,10 @@ Review        braille goldens; read the diff                          (Section 4
 
 ## 8. Open questions
 
-- **Light-on-dark versus dark-on-light is unverified on hardware.** The reasoning — backlit IPS,
-  high contrast, 218 ppi, glare — points strongly at light-on-dark, but it inverts the library's
-  default sense of "ink" and should be confirmed on the glass before the whole UI is built around
-  it.
+- **Resolved: light-on-dark, and it did not invert the library's sense of "ink."** Moving the swap
+  onto the panel's own INVON/INVOFF means `BLACK` still means ink in every drawing call, so no rule
+  above changes sense. What it did change is the backlight budget: full brightness on a mostly-dark
+  frame lights mostly what is meant to be dark, so the active level came down to 64/255.
 - **The Obra Dinn dither mechanics rest on secondary sources.** Pope's primary TIGSource post and
   `dukope.com/devlogs` both serve HTTP 403 to automated retrieval. The 8×8 Bayer, 128×128 blue noise
   and camera-centred-sphere details come from three consistent secondary accounts, not the original.
@@ -702,12 +730,16 @@ Review        braille goldens; read the diff                          (Section 4
 - **Quotations from *Working in One Bit* are second-hand.** They are short and consistent with the
   rest of the corpus, but verify wording against the original devlog before republishing them at
   length.
-- **The ~44 px corner radius is inferred arithmetic**, from the sibling module's R5.15 mm drawing
-  divided by the 0.11655 mm pitch. Measure the real clip on hardware — draw a 1 px full-perimeter
-  border and photograph it — before freezing the safe box.
-- **No timing figure here has been measured.** 17.2 ms full frame, 1.47 ms text line and 53 Hz
-  refresh are all arithmetic from sourced clock numbers. This board has never been run with this
-  library.
+- **Resolved: the ~44 px radius and the 16 px inset were checked on the glass.** The clip is a
+  rounded rectangle, not a corner disc — within a quadrant the visible region is a disc of radius 44
+  centred 44 px inwards — so any element spanning x ∈ [44, 196] clears both quadrants at every y.
+  The constants are `h0::safe` in `firmware/src/faces/layout.hpp` and are static-asserted against.
+- **No *wire* timing figure here has been measured.** 17.2 ms full frame, 1.47 ms text line and
+  53 Hz refresh are still arithmetic from sourced clock numbers; nothing has been on a scope, and
+  `actualBaud()` reports what the PL022's integer divider really negotiated rather than what was
+  asked for. The board has been run with this library since: clk_sys is 125 MHz because that is the
+  setting whose divider lands on exactly 62.5 MHz, the main loop measures ~30 Hz, and one sand tick
+  measures ~4.5 ms on the part.
 - **Landscape orientation is unresolved.** The two vendor demos disagree on the landscape MADCTL
   (0x78 in the basic C/Arduino driver, 0xA0 in the LVGL driver), and the +20 GRAM offset migrates
   between CASET and RASET on rotation. The LVGL landscape path is additionally suspect: it leaves
@@ -719,38 +751,58 @@ Review        braille goldens; read the diff                          (Section 4
   would settle how much of Pope's caution is still needed.
 - **Whether a real STBN volume is worth the flash cost is unknown** until there is a concrete
   animated-dither requirement. Until then R5 / R6 make it unnecessary.
-- **No asset pipeline exists**, and no decision has been made about whether this UI is fully
-  procedural or needs authored 1-bit bitmaps. That choice determines whether N10 is needed at all.
+- **Resolved by construction: the UI is fully procedural.** The one face draws sand from a
+  bit-packed grid and text from two built-in bitmap fonts (`FLAP_13X26`, `TERM_6X9`); there is not a
+  single authored bitmap in the tree. N10 is not needed until something wants one.
 
-## 9. The hourglass face
+## 9. The timer face
 
-A draining-sand hourglass is a planned timer face, and it is the hardest rendering problem in the
-product, because it is the case where §1.2's anchoring question has no obvious answer.
+There is one face: `h0::TimerFace` (`firmware/src/faces/timer_face.{hpp,cpp}`) — a split-flap MM:SS
+readout housed in a lintel, over a falling-sand simulation. The sand carries the *feel* of the time
+passing and the board carries the *number*; sand alone cannot tell you it is 4:07, and a readout
+alone is a clock.
 
-Sand wants to be a texture — a solid black bulb reads as ink, not grain — but the sand body is not
-a rigid object that translates. Its silhouette *changes shape* every frame: the upper cone drains
-from a falling surface, the lower pile grows from a rising one. `PatternTransform{offset_x,
-offset_y}` cancels a translation, and here there is no translation to cancel, so the R5 recipe does
-not apply mechanically.
+**The anchoring question above was answered by not dithering.** The sand is not a texture applied to
+a bulb-shaped region; it is 400–2000 individual grains on a 104×124 bit-packed grid at 2 px per
+cell, drawn solid. There is no pattern, so there is no phase to slip, and R5's anchoring choice
+never arises; R2's ≤ 25% budget is satisfied at zero. What §1.2 warned about is replaced by what
+§1.4 says reads best in one bit — discrete objects moving on integer pixels. The grid uses the
+framebuffer's own MSB-first packing, so a row of cells expands through a byte-wide doubling table:
+about 3,200 lookups for a full frame against roughly 18,000 virtual `setPixel` calls. That is §4.2's
+N2 argument, applied in application code.
 
-The choice, stated plainly:
+**The vessel is a horizontal floor with a hole, not a bowtie.** A taper spends most of its area on
+the taper, and its sloping walls are exactly what strands grains. A flat floor has its own version
+of that failure — only material above a 45° cone rising from the hole edge can ever reach it, and
+33–86% of the charge strands forever — so the fix is a centreline attractor at 400‰ that marches
+resting grains toward the hole. Measured residual drops to zero with it on. Above about 500‰ the far
+flank is scraped to a film while a mound stacks at the hole, and it stops reading as sand.
 
-- **Screen-anchored** (offset fixed at zero) means the pattern is a static field and the sand
-  boundary sweeps through it. Interior pixels never change state; only the row at the moving
-  boundary flips. That is the *minimum* possible pixel churn per frame, which is exactly what §1.4
-  asks for — and it is the option the naive reading of R5 would reject.
-- **Object-anchored** (offset tracking the sand body) means the pattern travels with the mass, which
-  is intuitively "correct" for a material, but the mass has no single origin: anchoring to the
-  bulb's top makes the pile crawl, anchoring to the pile's top makes the bulb crawl.
+**Legibility is solved by physics, not by knockout.** The lintel — the housing the readout sits in —
+is part of the simulation's *wall* grid, so no grain can ever be inside it, and `renderSand` assigns
+bytes rather than or-ing them, so the interior is repainted paper every frame for free. That is
+R11's mandatory halo at no cost; at one bit there is no other way to keep glyphs off sand that does
+not amount to drawing the readout twice. Two details are load-bearing. The lintel hangs from the
+ceiling with no cell above it: any obstacle with free space over it collects a tower of grains the
+attractor can never clear, and the upper chamber then never empties. And the wall grid the *renderer*
+sees is the outline only — jambs and soffit — while the grid the *physics* sees is filled solid;
+handing the solid shape to the renderer paints the housing black, which is precisely the
+black-on-black failure the lintel exists to prevent.
 
-The likely resolution is a third framing: anchor the pattern to the **vessel**, which *is* rigid, and
-let the sand boundary sweep through a vessel-local texture field. That collapses to the
-screen-anchored case whenever the vessel is stationary and behaves correctly when the device is
-flipped or tilted — the flip inverts the face through `rotate_deg = 180`, which is inside the 90°-step
-limit the library supports. It also keeps the falling stream at the neck solid per R6, since that is
-the one part of the image that genuinely translates.
+**The drain follows the clock, not the physics.** A metered gate at the hole opens only while the
+sand is behind the schedule `TimerModel::fraction()` reports. Charges are sized to the duration —
+400 grains at ≤ 60 s, 900 at ≤ 180 s, 2000 above — because no single charge serves both ends: a
+short timer cannot drain a large charge at the rate the attractor moves grains, and a long one looks
+steppy on a small one. The top tier is 2000 rather than 3000 because the lintel takes a fifth of the
+upper chamber; measured capacity with it in place is 2188 placed, so 2000 keeps real margin against
+silent truncation. The simulation ticks on its own clock at 33.3 ms, never once per render, because
+the drain has to run at a fixed rate whatever the frame rate happens to be. One tick costs about
+4.5 ms on this part — roughly 13% of the CPU at 30 Hz.
 
-None of this is settled. It is exactly the scenario N8's motion-stability goldens exist to
-adjudicate, and it should be resolved with a rendered frame sequence before the face is built.
-Watch the R2 budget while resolving it: a full bulb of dithered sand can exceed 25% of the frame on
-its own.
+**Turning the device over is handled after the fact, not inside the face.** `h0::rotate180` rotates
+the finished frame in place, gravity is negated before it reaches the simulation, and touch
+coordinates are mirrored. The simulation, the picker, the fonts and the touch map all keep working
+in a content space where up is up; nothing upstream ever learns the device can be inverted.
+`TimerModel` carries a run-generation counter so that a flip — which resets the clock without
+touching the duration — recharges the sand as well. Watching the duration instead left the sand
+drained while the clock ran from full.
