@@ -283,6 +283,7 @@ int main() {
     uint32_t frames = 0;
     uint64_t faceShownUntil = 0;
     uint64_t lastInteractionUs = 0;
+    bool faceChangedThisTouch = false;
     uint8_t backlight = kBacklightActive;
     uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
     uint64_t lastTouchUs = 0;
@@ -367,8 +368,17 @@ int main() {
             // A horizontal swipe cycles the face. The controller detects it
             // itself, and it cannot be confused with a column drag because the
             // columns only ever consume vertical movement.
-            if (tp.gesture == board::TouchGesture::SlideLeft ||
-                tp.gesture == board::TouchGesture::SlideRight) {
+            // At most ONE face change per finger-down. The controller keeps
+            // reporting the same gesture code for as long as the finger is
+            // still there, so acting on the code directly fires it on every
+            // frame of the swipe and races through all three faces. A time
+            // debounce would only hide that; latching per touch is exact.
+            const bool swipe = (tp.gesture == board::TouchGesture::SlideLeft ||
+                                tp.gesture == board::TouchGesture::SlideRight);
+            if (!tp.pressed) faceChangedThisTouch = false;
+
+            if (swipe && !faceChangedThisTouch) {
+                faceChangedThisTouch = true;
                 app.cycleFace();
                 buzzer.play(h0::Feedback::Resumed);
                 faceShownUntil = now + 1'200'000ull;
