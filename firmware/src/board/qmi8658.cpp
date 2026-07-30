@@ -120,7 +120,13 @@ h0::Vec3 axisMap(const h0::Vec3& d) {
     //   device z -> panel z, uninverted
     //                            (flat screen-up read as FACEDOWN and vice
     //                             versa, so this axis was doubly negated)
-    return h0::Vec3{-d.y, -d.x, d.z};
+    //
+    // The y sign was corrected once the sand simulation gave it a visible
+    // meaning: sand fell UPWARD, which is the one thing the posture classifier
+    // could never reveal. UprightA and UprightB are symmetric -- the flip
+    // gesture is a transition BETWEEN them -- so nothing depended on which was
+    // which until something had to actually fall.
+    return h0::Vec3{-d.y, d.x, d.z};
 }
 
 } // namespace board

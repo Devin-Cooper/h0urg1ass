@@ -57,16 +57,6 @@ int main(int argc, char** argv) {
     const std::string dir = (argc > 1) ? argv[1] : ".";
     Panel fb;
 
-    // Hourglass across the drain, paused so the frames are comparable.
-    const struct { float f; const char* tag; } levels[] = {
-        {1.00f, "100"}, {0.85f, "085"}, {0.70f, "070"}, {0.50f, "050"},
-        {0.30f, "030"}, {0.15f, "015"}, {0.00f, "000"},
-    };
-    for (const auto& l : levels) {
-        h0::HourglassFace::renderAt(fb, l.f, true, 0);
-        emit(fb, dir, std::string("hourglass-") + l.tag);
-    }
-
     // Digits in every state the face can be in.
     h0::DigitsFace digits;
     h0::TimerModel t;
@@ -110,6 +100,23 @@ int main(int argc, char** argv) {
     { h0::PickerState p; p.hours = 1; p.minutes = 45; p.seconds = 5;
       p.activeColumn = 2; h0::SettingFace::renderAt(fb, p); }
     emit(fb, dir, "pick-d-hours");
+
+    // The simulated hourglass, at several points through a drain.
+    {
+        h0::TimerModel st;
+        st.setDuration(120 * SEC);
+        st.start(0);
+        h0::HourglassFace sand;
+        sand.restart(st, 1234);
+        const char* tags[] = {"a-full", "b-quarter", "c-half", "d-most", "e-done"};
+        const uint64_t marks[] = {0, 30 * SEC, 60 * SEC, 95 * SEC, 120 * SEC};
+        uint64_t t = 0;
+        for (int m = 0; m < 5; ++m) {
+            while (t < marks[m]) { t += 33'333ull; sand.tick(st, t); }
+            sand.render(fb, st, t);
+            emit(fb, dir, std::string("sand-") + tags[m]);
+        }
+    }
 
     return 0;
 }

@@ -18,14 +18,12 @@
 //                       [--roll P] [--attract Q] [--seed S] [--dither]
 //
 // With no --grain, all three candidate grain sizes (2, 3, 4 px) are run. Each
-// run also writes shaped-<fraction>.pbm from the shipped face, so one command
 // produces both halves of the comparison.
 
 #include <1bit/core/framebuffer.hpp>
 #include <1bit/render/pattern.hpp>
 #include <1bit/render/primitives.hpp>
 
-#include "faces/hourglass_face.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -792,14 +790,6 @@ RunStats runDrain(int grain, int seconds, int reach, int rollPct, int attractPct
     return st;
 }
 
-void writeShapedReference(const std::string& dir) {
-    Panel fb;
-    for (const Level& l : kLevels) {
-        h0::HourglassFace::renderAt(fb, static_cast<float>(l.f), true, 0);
-        writePbm(fb, framePath(dir, std::string("shaped-") + l.tag));
-    }
-    std::printf("wrote shaped-{100,085,070,050,030,015,000}.pbm for side-by-side comparison\n");
-}
 
 int parseInt(const char* v, int fallback) {
     if (!v) return fallback;
@@ -847,7 +837,6 @@ int main(int argc, char** argv) {
                 TICKS_PER_SEC, seconds, seconds * TICKS_PER_SEC, seed, reach, rollPct, attractPct,
                 dither ? "dithered (shape comparison)" : "solid");
 
-    writeShapedReference(dir);
 
     const int grains[3] = {2, 3, 4};
     std::vector<RunStats> stats;

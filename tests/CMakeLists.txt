@@ -27,7 +27,6 @@ add_library(h0_input STATIC
     ${FW_SRC}/input/orientation.cpp
     ${FW_SRC}/app/app.cpp
     ${FW_SRC}/input/drag_column.cpp
-    ${FW_SRC}/sand/sand_sim.cpp
 )
 target_include_directories(h0_input PUBLIC ${FW_SRC})
 
@@ -36,6 +35,9 @@ add_library(h0_faces STATIC
     ${FW_SRC}/faces/hourglass_face.cpp
     ${FW_SRC}/faces/splitflap_face.cpp
     ${FW_SRC}/faces/setting_face.cpp
+    ${FW_SRC}/sand/sand_sim.cpp
+    ${FW_SRC}/sand/sand_render.cpp
+    ${FW_SRC}/sand/sand_vessel.cpp
 )
 target_include_directories(h0_faces PUBLIC ${FW_SRC})
 target_link_libraries(h0_faces PUBLIC onebit_host)
@@ -84,7 +86,7 @@ endif()
 # timer durations. Prints numbers, ships nothing, and is expected to be deleted
 # once those constants are pinned.
 add_executable(sand_tune proto/sand_tune.cpp)
-target_link_libraries(sand_tune PRIVATE h0_input)
+target_link_libraries(sand_tune PRIVATE h0_faces)
 if(NOT MSVC)
     target_compile_options(sand_tune PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()

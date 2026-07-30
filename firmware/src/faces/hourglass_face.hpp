@@ -1,28 +1,21 @@
 #pragma once
 
 #include "faces/face.hpp"
+#include "sand/sand_vessel.hpp"
 
 namespace h0 {
 
-/// A literal hourglass: sand drains from the upper bulb to the lower one as the
-/// timer runs. The face the project is named after, and the one that reads from
-/// across a room without parsing digits.
+/// A simulated hourglass: a horizontal floor with a hole, and real falling sand.
 ///
-/// This is the **shaped-fill** implementation -- sand is a computed region whose
-/// area tracks `remaining/total`, not a simulation. A physics-driven variant is
-/// a separate, explicitly optional piece of work; this one must look good on its
-/// own because it is what ships.
+/// Replaces an earlier shaped fill -- a drawn region whose area tracked the
+/// remaining fraction. What the simulation buys over that is a crater forming
+/// over the hole as the upper chamber drains, grain-scale roughness on every
+/// surface, a stream of discrete falling grains, and sand that responds to the
+/// device being tilted. What it costs is a tick every frame.
 ///
-/// Two properties are load-bearing and easy to lose:
-///
-/// * **Area, not height, tracks the fraction.** The bulbs taper, so a linear
-///   height mapping would drain visibly fast at the top and slow at the neck.
-///   Both levels are solved for equal area instead.
-/// * **The dither is screen-anchored.** Patterns are indexed off absolute
-///   framebuffer coordinates, so the texture appears to stay still while the
-///   *boundary* moves through it. Anchoring it to the sand region instead makes
-///   the whole body crawl as the level changes, which is the single most
-///   distracting artifact available in one bit.
+/// The vessel is deliberately not an hourglass outline. A bowtie spends most of
+/// its area on taper and its sloping walls are what strand grains; a flat floor
+/// gives full-width chambers and a shape describable in two lines.
 class HourglassFace : public IFace {
 public:
     void render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now) override;
@@ -31,11 +24,26 @@ public:
     /// Meaningless without a duration to be a fraction of.
     bool supports(const TimerModel& t) const override { return t.duration() > 0; }
 
-    /// Render at an explicit fill fraction, bypassing the timer. Used by the
-    /// golden tests to pin specific levels, and by the face comparison tool.
-    /// `phase` advances the falling stream's animation.
-    static void renderAt(onebit::IFramebuffer& fb, float fraction, bool running,
-                         uint32_t phase);
+    /// Advance the simulation. Called on its own clock, NOT once per render:
+    /// the sand must fall at a fixed rate regardless of how often the display
+    /// happens to be redrawn.
+    void tick(const TimerModel& t, uint64_t now);
+
+    /// Restart with a charge sized to the duration.
+    ///
+    /// Short timers need FEW grains -- the attractor can only move so many per
+    /// tick, so a large charge cannot drain in thirty seconds. Long timers need
+    /// MANY, because metering granularity is one gate-burst per grain and a
+    /// small charge makes a ten-minute drain visibly steppy.
+    void restart(const TimerModel& t, uint32_t seed);
+
+    void setGravity(Gravity g) { vessel_.setGravity(g); }
+
+private:
+    SandVessel vessel_;
+    bool started_ = false;
+    uint64_t lastTickUs_ = 0;
+    uint64_t lastDuration_ = 0;
 };
 
 } // namespace h0

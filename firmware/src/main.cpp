@@ -185,6 +185,24 @@ void touchIrqHandler(uint gpio, uint32_t events) {
     g_touchIrq = true;
 }
 
+/// Quantise the gravity vector to the eight directions the sand understands.
+///
+/// The sand's y axis runs down the screen, matching the panel, so a gravity
+/// vector pointing down the screen is Gravity::S.
+h0::Gravity gravityDir(const h0::Vec3& g) {
+    const float ax = g.x < 0 ? -g.x : g.x;
+    const float ay = g.y < 0 ? -g.y : g.y;
+    // A diagonal only when both axes are a real fraction of the total, so a
+    // near-vertical hold does not flicker between S and SE.
+    const bool diag = (ax > 0.38f && ay > 0.38f);
+    if (diag) {
+        if (g.y > 0) return g.x > 0 ? h0::Gravity::SE : h0::Gravity::SW;
+        return g.x > 0 ? h0::Gravity::NE : h0::Gravity::NW;
+    }
+    if (ay >= ax) return g.y > 0 ? h0::Gravity::S : h0::Gravity::N;
+    return g.x > 0 ? h0::Gravity::E : h0::Gravity::W;
+}
+
 const char* orientationName(h0::Orientation o) {
     switch (o) {
         case h0::Orientation::UprightA: return "UPRIGHT";
@@ -359,6 +377,14 @@ int main() {
             // needs, so the picker would stay live in the hand.
             app.setFlat(orient.current() == h0::Orientation::FlatBack);
 
+            // The sand follows real gravity. Lying flat is the one posture with
+            // no in-plane direction, so it keeps whatever it had rather than
+            // spinning on sensor noise.
+            if (orient.current() != h0::Orientation::FlatBack &&
+                orient.current() != h0::Orientation::FaceDown) {
+                hourglass.setGravity(gravityDir(filter.value()));
+            }
+
             if (ev != h0::MotionEvent::None) {
                 const h0::Feedback fbk = app.onMotion(ev, now);
                 lastInteractionUs = now;
@@ -475,6 +501,14 @@ int main() {
                 colSec.reset();
                 activeCol = 0;
             }
+        }
+
+        // Advance the sand on its OWN clock, not once per render: the drain has
+        // to run at a fixed rate whatever the frame rate happens to be. Only
+        // while the face is actually showing -- a simulation nobody can see is
+        // pure battery cost.
+        if (app.face() == h0::FaceId::Hourglass && !app.settingPosture()) {
+            hourglass.tick(app.timer(), now);
         }
 
         const h0::Feedback tickFb = app.tick(now);

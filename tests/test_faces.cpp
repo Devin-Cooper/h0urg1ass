@@ -8,6 +8,7 @@
 
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
+#include "sand/sand_vessel.hpp"
 #include "faces/splitflap_face.hpp"
 #include "timer/timer_model.hpp"
 
@@ -41,23 +42,24 @@ int inkInRows(const onebit::IFramebuffer& fb, int16_t y0, int16_t y1) {
 
 /// Nothing may be drawn under the rounded corners. The panel physically clips a
 /// ~44 px radius, so ink there is invisible at best and clipped text at worst.
-/// Checked against the measured radius with the safe inset as the tolerance.
+///
+/// The clip is a rounded rectangle: within a corner quadrant the visible region
+/// is a disc of radius R centred at (R, R) inwards from that corner, NOT the
+/// complement of a disc centred on the corner point itself. The difference is
+/// not academic -- the corner-point form rejects (16, 16), which `safe::INSET`
+/// records as measured fully visible on hardware, and it went unnoticed until
+/// the sand vessel became the first face to actually fill the safe box.
 int inkInCorners(const onebit::IFramebuffer& fb) {
     constexpr int R = 44;
     const int16_t w = fb.width(), h = fb.height();
     int n = 0;
-    const int16_t cx[4] = {0, static_cast<int16_t>(w - 1), 0, static_cast<int16_t>(w - 1)};
-    const int16_t cy[4] = {0, 0, static_cast<int16_t>(h - 1), static_cast<int16_t>(h - 1)};
-    for (int c = 0; c < 4; ++c) {
-        for (int16_t dy = 0; dy < R; ++dy) {
-            for (int16_t dx = 0; dx < R; ++dx) {
-                // Outside the corner arc => physically clipped.
-                if (dx * dx + dy * dy >= R * R) {
-                    const int16_t x = (cx[c] == 0) ? dx : static_cast<int16_t>(w - 1 - dx);
-                    const int16_t y = (cy[c] == 0) ? dy : static_cast<int16_t>(h - 1 - dy);
-                    if (fb.getPixel(x, y) == BLACK) ++n;
-                }
-            }
+    for (int16_t y = 0; y < h; ++y) {
+        for (int16_t x = 0; x < w; ++x) {
+            // Distance from the arc centre of whichever corner this pixel is in.
+            const int dx = (x < R) ? (R - x) : (x >= w - R ? x - (w - 1 - R) : 0);
+            const int dy = (y < R) ? (R - y) : (y >= h - R ? y - (h - 1 - R) : 0);
+            if (dx == 0 || dy == 0) continue; // not in a corner quadrant
+            if (dx * dx + dy * dy > R * R && fb.getPixel(x, y) == BLACK) ++n;
         }
     }
     return n;
@@ -67,109 +69,6 @@ int inkInCorners(const onebit::IFramebuffer& fb) {
 
 // ------------------------------------------------------------- hourglass --
 
-TEST_CASE("hourglass draws something at every fill level") {
-    Panel fb;
-    for (float f : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f}) {
-        h0::HourglassFace::renderAt(fb, f, false, 0);
-        CAPTURE(f);
-        // The glass outline alone is ~700 px, so anything near zero means the
-        // face silently rendered nothing.
-        CHECK(inkCount(fb) > 500);
-    }
-}
-
-TEST_CASE("hourglass respects the rounded corners") {
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 1.0f, true, 0);
-    CHECK(inkInCorners(fb) == 0);
-}
-
-TEST_CASE("sand moves from the upper bulb to the lower one") {
-    Panel fb;
-    constexpr int16_t NECK = 148;
-
-    h0::HourglassFace::renderAt(fb, 1.0f, false, 0);
-    const int fullUpper = inkInRows(fb, 0, NECK);
-    const int fullLower = inkInRows(fb, static_cast<int16_t>(NECK + 1), 279);
-
-    h0::HourglassFace::renderAt(fb, 0.0f, false, 0);
-    const int emptyUpper = inkInRows(fb, 0, NECK);
-    const int emptyLower = inkInRows(fb, static_cast<int16_t>(NECK + 1), 279);
-
-    CHECK(fullUpper > emptyUpper);  // the top drains
-    CHECK(emptyLower > fullLower);  // the bottom fills
-}
-
-TEST_CASE("upper sand decreases monotonically as the timer runs down") {
-    Panel fb;
-    int prev = 1 << 30;
-    for (int i = 10; i >= 0; --i) {
-        h0::HourglassFace::renderAt(fb, static_cast<float>(i) / 10.0f, false, 0);
-        const int upper = inkInRows(fb, 0, 147);
-        CAPTURE(i);
-        CHECK(upper <= prev);
-        prev = upper;
-    }
-}
-
-TEST_CASE("the fill is area-linear, not height-linear") {
-    // The bulbs taper ~15:1, so a height mapping would drain fast at the rim and
-    // crawl at the neck. Half the sand must be gone at half the time, within a
-    // tolerance that allows for the dither and the glass outline.
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 1.0f, false, 0);
-    const int full = inkInRows(fb, 0, 147);
-    h0::HourglassFace::renderAt(fb, 0.0f, false, 0);
-    const int empty = inkInRows(fb, 0, 147);
-    h0::HourglassFace::renderAt(fb, 0.5f, false, 0);
-    const int half = inkInRows(fb, 0, 147);
-
-    const double sandFull = full - empty;
-    const double sandHalf = half - empty;
-    CHECK(sandHalf / sandFull == doctest::Approx(0.5).epsilon(0.08));
-}
-
-TEST_CASE("the running stream is visible and pausing removes it") {
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 0.5f, true, 0);
-    const int running = inkCount(fb);
-    h0::HourglassFace::renderAt(fb, 0.5f, false, 0);
-    const int paused = inkCount(fb);
-
-    // Running must add the falling column and nothing else.
-    CHECK(running > paused);
-    CHECK(running - paused < 400);
-}
-
-TEST_CASE("an empty hourglass shows no stream even while running") {
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 0.0f, true, 0);
-    const int running = inkCount(fb);
-    h0::HourglassFace::renderAt(fb, 0.0f, false, 0);
-    CHECK(running == inkCount(fb));
-}
-
-TEST_CASE("the dither is screen-anchored, not sand-anchored") {
-    // The property that stops the whole sand body crawling as the level moves.
-    // Where two fill levels both contain a given pixel, that pixel's ink state
-    // must be identical -- the boundary moves through a stationary texture.
-    Panel a, b;
-    h0::HourglassFace::renderAt(a, 0.90f, false, 0);
-    h0::HourglassFace::renderAt(b, 0.70f, false, 0);
-
-    int shared = 0, differing = 0;
-    for (int16_t y = 100; y <= 147; ++y) {          // deep inside both fills
-        for (int16_t x = 90; x <= 150; ++x) {
-            if (a.getPixel(x, y) == BLACK || b.getPixel(x, y) == BLACK) {
-                ++shared;
-                if (a.getPixel(x, y) != b.getPixel(x, y)) ++differing;
-            }
-        }
-    }
-    REQUIRE(shared > 200);
-    CHECK(differing == 0);
-}
-
 TEST_CASE("hourglass is not offered without a duration") {
     h0::HourglassFace face;
     h0::TimerModel t;
@@ -177,100 +76,6 @@ TEST_CASE("hourglass is not offered without a duration") {
     t.setDuration(60 * SEC);
     CHECK(face.supports(t));
 }
-
-TEST_CASE("the pile grows all the way to empty") {
-    // Regression: the pile used to saturate at fraction 0.13 and then never
-    // change again, freezing for the last eighth of every countdown while the
-    // top kept draining.
-    Panel fb;
-    int prev = -1;
-    for (int i = 100; i >= 0; --i) {
-        h0::HourglassFace::renderAt(fb, static_cast<float>(i) / 100.0f, false, 0);
-        const int lower = inkInRows(fb, 149, 279);
-        CAPTURE(i);
-        CHECK(lower >= prev);
-        prev = lower;
-    }
-    h0::HourglassFace::renderAt(fb, 0.15f, false, 0);
-    const int a = inkInRows(fb, 149, 279);
-    h0::HourglassFace::renderAt(fb, 0.00f, false, 0);
-    const int b = inkInRows(fb, 149, 279);
-    CHECK(b > a + 200); // the last 15% must still visibly move
-}
-
-TEST_CASE("the stream bridges the neck to the pile at every running level") {
-    // Regression: the stream used to vanish for every fraction below 0.14 --
-    // showing sand upstairs, a static pile downstairs, and nothing connecting
-    // them, for exactly the part of the countdown a user is watching.
-    for (int i = 99; i >= 1; --i) {
-        const float f = static_cast<float>(i) / 100.0f;
-        Panel run, still;
-        h0::HourglassFace::renderAt(run, f, true, 0);
-        h0::HourglassFace::renderAt(still, f, false, 0);
-        CAPTURE(f);
-        CHECK(inkCount(run) > inkCount(still)); // a stream exists at all
-    }
-}
-
-TEST_CASE("the lower pile is a cone, not a level") {
-    // Area-based assertions cannot tell a cone from a flat fill of equal area,
-    // so this pins the shape itself: width must grow with depth.
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 0.5f, false, 0);
-    auto width = [&](int16_t y) {
-        int lo = 9999, hi = -1;
-        for (int16_t x = 47; x <= 193; ++x)
-            if (fb.getPixel(x, y) == BLACK) { if (x < lo) lo = x; hi = x; }
-        return (hi < 0) ? 0 : (hi - lo + 1);
-    };
-    int16_t apex = -1;
-    for (int16_t y = 149; y <= 250; ++y) if (width(y) > 4) { apex = y; break; }
-    REQUIRE(apex >= 149);
-    CAPTURE(apex);
-    CHECK(width(static_cast<int16_t>(apex + 24)) > width(static_cast<int16_t>(apex + 6)) + 20);
-}
-
-TEST_CASE("sand keeps a paper gutter from the glass wall") {
-    // The dither is 82% coverage against a solid wall -- close enough in density
-    // that without a white gap the two regions read as one and the silhouette is
-    // lost.
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 1.0f, false, 0);
-    for (int16_t y = 45; y <= 140; y = static_cast<int16_t>(y + 5)) {
-        int16_t wall = -1;
-        for (int16_t x = 40; x < 120; ++x)
-            if (fb.getPixel(x, y) == BLACK) { wall = x; break; }
-        REQUIRE(wall > 0);
-        CAPTURE(y);
-        CAPTURE(wall);
-        // wall is 2 px, then at least 1 px of paper before any sand
-        CHECK(fb.getPixel(static_cast<int16_t>(wall + 2), y) == WHITE);
-    }
-}
-
-TEST_CASE("the stream does not animate") {
-    // A per-frame wobble on the thinnest feature on screen is the shimmer the
-    // rule set forbids, and it would make the stream the only thing changing in
-    // most frames -- continuous repaints on a battery device.
-    Panel a, b;
-    h0::HourglassFace::renderAt(a, 0.5f, true, 0);
-    h0::HourglassFace::renderAt(b, 0.5f, true, 997);
-    for (int16_t y = 0; y < 280; ++y)
-        for (int16_t x = 0; x < 240; ++x)
-            REQUIRE(a.getPixel(x, y) == b.getPixel(x, y));
-}
-
-TEST_CASE("hourglass golden") {
-    Panel fb;
-    h0::HourglassFace::renderAt(fb, 1.00f, false, 0);
-    checkGolden(fb, "hourglass@full");
-    h0::HourglassFace::renderAt(fb, 0.50f, true, 0);
-    checkGolden(fb, "hourglass@half-running");
-    h0::HourglassFace::renderAt(fb, 0.00f, false, 0);
-    checkGolden(fb, "hourglass@empty");
-}
-
-// ---------------------------------------------------------------- digits --
 
 TEST_CASE("digits face renders and respects the corners") {
     Panel fb;
@@ -430,4 +235,137 @@ TEST_CASE("expiry inverts the field") {
     const int expired = inkCount(fb);
 
     CHECK(expired > running * 5);
+}
+
+// ------------------------------------------------- simulated hourglass --
+
+namespace {
+
+/// Run the face forward to a given point in a 120 s timer.
+void runSand(h0::HourglassFace& face, h0::TimerModel& t, uint64_t to) {
+    for (uint64_t now = 0; now <= to; now += 33'333ull) face.tick(t, now);
+}
+
+} // namespace
+
+TEST_CASE("the corner helper flags clipped ink and clears the safe box") {
+    // This helper gates several faces, so a version that always returns zero
+    // would silently disarm all of them. Pin both directions.
+    Panel fb;
+    fb.clear(WHITE);
+    CHECK(inkInCorners(fb) == 0);
+
+    fb.setPixel(2, 2, BLACK); // deep under the top-left arc
+    CHECK(inkInCorners(fb) == 1);
+
+    fb.clear(WHITE);
+    fb.setPixel(h0::safe::X, h0::safe::Y, BLACK); // measured visible on hardware
+    fb.setPixel(239 - h0::safe::INSET, 279 - h0::safe::INSET, BLACK);
+    CHECK(inkInCorners(fb) == 0);
+}
+
+TEST_CASE("the sand drains from the upper chamber to the lower one") {
+    Panel fb;
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+
+    h0::HourglassFace face;
+    face.restart(t, 4321);
+    face.render(fb, t, 0);
+    const int upperStart = inkInRows(fb, 0, 139);
+
+    runSand(face, t, 110 * SEC);
+    face.render(fb, t, 110 * SEC);
+    const int upperEnd = inkInRows(fb, 0, 139);
+    const int lowerEnd = inkInRows(fb, 141, 279);
+
+    CHECK(upperStart > 0);
+    CHECK(upperEnd < upperStart / 2); // most of it has gone
+    CHECK(lowerEnd > 0);
+}
+
+TEST_CASE("the upper chamber actually empties") {
+    // On a FLAT floor sand is stable at zero slope, so grains far from the hole
+    // never slide in on their own -- measured, 33-86% strand permanently. The
+    // centreline attractor is what makes the vessel drainable at all, so this
+    // pins the property it exists for.
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+
+    h0::HourglassFace face;
+    face.restart(t, 99);
+    runSand(face, t, 130 * SEC);
+
+    Panel fb;
+    face.render(fb, t, 130 * SEC);
+
+    // Measure against an empty vessel rather than a guessed threshold: the
+    // border alone puts ~900 px of ink above the floor, which swamps any
+    // constant picked by eye.
+    Panel bare;
+    bare.clear(WHITE);
+    h0::SandGrid noSand;
+    h0::renderSand(bare, noSand, h0::makeVessel(h0::SandVessel::kHoleHalf));
+    const int sandLeft = inkInRows(fb, 0, 138) - inkInRows(bare, 0, 138);
+
+    CHECK(sandLeft >= 0);
+    CHECK(sandLeft < 40); // a couple of stragglers at most, out of 900 grains
+}
+
+TEST_CASE("the sand tracks the schedule rather than free-falling") {
+    // The gate is the whole reason this is a timer and not a toy: unmetered the
+    // charge drains in seconds regardless of the duration set.
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+
+    h0::HourglassFace face;
+    face.restart(t, 7);
+    runSand(face, t, 30 * SEC);
+
+    Panel fb;
+    face.render(fb, t, 30 * SEC);
+    const int upperQuarter = inkInRows(fb, 0, 139);
+
+    runSand(face, t, 90 * SEC);
+    face.render(fb, t, 90 * SEC);
+    const int upperThreeQuarter = inkInRows(fb, 0, 139);
+
+    // A quarter of the way through, most of the sand is still upstairs.
+    CHECK(upperQuarter > upperThreeQuarter);
+    CHECK(upperThreeQuarter > 0);
+}
+
+TEST_CASE("the simulated hourglass respects the rounded corners") {
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+    t.start(0);
+    h0::HourglassFace face;
+    face.restart(t, 5);
+    Panel fb;
+    face.render(fb, t, 0);
+    CHECK(inkInCorners(fb) == 0);
+}
+
+TEST_CASE("a new duration re-charges the sand") {
+    // Carrying an old charge over would drain at the wrong rate for the whole
+    // of the next run.
+    h0::TimerModel t;
+    t.setDuration(60 * SEC);
+    t.start(0);
+    h0::HourglassFace face;
+    face.restart(t, 11);
+    runSand(face, t, 40 * SEC);
+
+    Panel fb;
+    face.render(fb, t, 40 * SEC);
+    const int drained = inkInRows(fb, 0, 139);
+
+    t.setDuration(600 * SEC);
+    t.start(0);
+    face.tick(t, 41 * SEC); // notices the change and restarts
+    face.render(fb, t, 41 * SEC);
+    CHECK(inkInRows(fb, 0, 139) > drained);
 }
