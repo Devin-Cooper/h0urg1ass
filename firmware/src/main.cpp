@@ -72,7 +72,20 @@ constexpr uint64_t kDefaultDurationUs = 2ull * 60ull * 1'000'000ull;
 /// ~16 mA for everything else -- so how long it stays bright is the single
 /// biggest lever on battery life, worth more than every other optimisation
 /// combined. Dimming rather than blanking keeps the timer glanceable.
-constexpr uint8_t kBacklightActive = 200;
+/// Quarter brightness. Ample indoors, and it takes the biggest single bite out
+/// of the power budget -- the backlight dominates active draw, so this is worth
+/// more than any amount of tuning elsewhere. It also flatters a white-on-black
+/// display, where a bright backlight mostly lights up the parts of the screen
+/// that are meant to be dark.
+///
+/// Perceived brightness is not linear in duty, so this looks considerably
+/// brighter than a quarter. That is the point: the number that matters is the
+/// current, and the eye barely notices what the battery does.
+constexpr uint8_t kBacklightActive = 64;
+
+/// NOTE: at an active level of 64 this is 56% of it, not the 18% it was against
+/// the old 200 -- so the idle dim is now a slight fade rather than an obvious
+/// state change, and saves correspondingly little.
 constexpr uint8_t kBacklightIdle = 36;
 constexpr uint64_t kIdleAfterUs = 20ull * 1'000'000ull;
 
@@ -286,6 +299,12 @@ int main() {
 
     static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
     static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
+    // White figures on a black field. The framebuffer convention is unchanged --
+    // BLACK still means ink everywhere in the code -- this only decides which way
+    // round the glass shows it. It also suits the panel physically: an unlit
+    // pixel is the darkest thing this display can do, so a mostly-black frame is
+    // both the better-looking one and the cheaper one.
+    lcd.setInverted(true);
     lcd.clear(WHITE);
     lcd.setBacklight(kBacklightActive);
 

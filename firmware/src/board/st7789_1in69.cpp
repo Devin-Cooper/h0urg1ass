@@ -131,9 +131,10 @@ bool St7789_1in69::init() {
     // INVON is mandatory on this panel. Every vendor driver sends it
     // unconditionally; omit it and, for a 1-bit library, black and white
     // silently swap -- which looks exactly like an ink/paper mistake.
-    if (geometry().invert) {
-        sendCmd(0x21);
-    }
+    //
+    // The UI preference rides on the same command, XORed in: white-on-black is
+    // simply the other state of a control the panel already has.
+    sendCmd((geometry().invert != uiInverted_) ? 0x21 : 0x20);
 
     // The vendor sends SLPOUT *after* the register block, not before it.
     sendCmd(0x11); // SLPOUT
@@ -152,6 +153,7 @@ bool St7789_1in69::init() {
     pwm_init(blSlice_, &cfg, true);
     pwm_set_gpio_level(lcd::BACKLIGHT, 0);
 
+    inited_ = true;
     return true;
 }
 
@@ -164,6 +166,15 @@ void St7789_1in69::hardReset() {
     sleep_ms(100);
     gpio_put(lcd::LCD_RST, 1);
     sleep_ms(100);
+}
+
+void St7789_1in69::setInverted(bool on) {
+    if (on == uiInverted_) return;
+    uiInverted_ = on;
+    // Before init the value is simply remembered; init() sends it as part of the
+    // register block. sendCmd waits for DMA to drain, so a mid-run toggle cannot
+    // land inside a frame.
+    if (inited_) sendCmd((geometry().invert != uiInverted_) ? 0x21 : 0x20);
 }
 
 void St7789_1in69::sendCmd(uint8_t cmd, const uint8_t* params, size_t len) {

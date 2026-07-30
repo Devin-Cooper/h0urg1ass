@@ -105,13 +105,16 @@ def contact_sheet(images, cols, gap=12, label_h=0):
     return W, H, canvas
 
 
-def write_sheet_png(path, W, H, canvas, scale=1):
+def write_sheet_png(path, W, H, canvas, scale=1, invert=False):
     out = bytearray()
-    # PBM convention: 1 = ink. The panel is transmissive and backlit, so ink is
-    # dark on a bright field -- 1 must render BLACK, matching write_png(). These
-    # two maps disagreeing is an easy way to spend an afternoon deciding a face
-    # looks wrong when it is only inverted.
-    shade = {0: 255, 1: 0, 2: 110}  # paper, ink, surround
+    # PBM convention: 1 = ink, and that is the framebuffer's own convention too.
+    # Which way the GLASS shows it is a separate decision -- the firmware runs the
+    # panel inverted (white figures on black), so --invert is what makes a preview
+    # match the device. write_png() must agree with this map: the two disagreeing
+    # is an easy way to spend an afternoon deciding a face looks wrong when it is
+    # only the wrong way round.
+    shade = ({0: 0, 1: 255, 2: 110} if invert     # what the panel shows
+             else {0: 255, 1: 0, 2: 110})         # paper, ink, surround
     for row in canvas:
         for _ in range(scale):
             out.append(0)
@@ -137,6 +140,8 @@ def main():
     ap.add_argument("--sheet")
     ap.add_argument("--cols", type=int, default=4)
     ap.add_argument("--only", default="", help="substring filter on filename")
+    ap.add_argument("--invert", action="store_true",
+                    help="render as the panel shows it: white figures on black")
     args = ap.parse_args()
 
     paths = sorted(glob.glob(os.path.join(args.indir, "*.pbm")))
@@ -150,13 +155,13 @@ def main():
     for p in paths:
         w, h, rows = read_pbm(p)
         out = p[:-4] + ".png"
-        write_png(out, w, h, rows, scale=args.scale)
+        write_png(out, w, h, rows, scale=args.scale, invert=args.invert)
         images.append((os.path.basename(p)[:-4], w, h, rows))
         print(f"wrote {out}  ({w}x{h} -> {w*args.scale}x{h*args.scale})")
 
     if args.sheet:
         W, H, canvas = contact_sheet(images, args.cols)
-        write_sheet_png(args.sheet, W, H, canvas, scale=args.scale)
+        write_sheet_png(args.sheet, W, H, canvas, scale=args.scale, invert=args.invert)
         print(f"wrote {args.sheet}  ({W*args.scale}x{H*args.scale}, {len(images)} panels)")
     return 0
 

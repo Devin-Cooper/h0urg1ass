@@ -52,6 +52,21 @@ public:
     void clear(onebit::Color c = onebit::WHITE) override;
     bool setBacklight(uint8_t level) override;
 
+    /// Swap ink and paper on the glass: white figures on a black field.
+    ///
+    /// A display MODE, not a redraw. INVON/INVOFF costs one byte on the wire and
+    /// nothing per frame, so the framebuffer keeps its own convention -- BLACK
+    /// still means ink -- and nothing upstream needs to know which way round the
+    /// panel is showing it. Doing this by inverting the buffer instead would
+    /// cost a pass over 8,400 bytes every frame to achieve the same thing.
+    ///
+    /// XORed with the panel's own requirement rather than replacing it. This
+    /// panel needs INVON to render ink as black at all, so an inverted UI is
+    /// INVOFF here -- and collapsing the two would make a taste decision look
+    /// like a hardware quirk to the next person reading the init sequence.
+    void setInverted(bool on);
+    bool inverted() const { return uiInverted_; }
+
     /// Block until DMA has drained *and* the SPI shift register is empty, then
     /// release CS. `writePixels` only queues a transfer, so anything timing a
     /// push -- or about to stop the clock -- must call this first.
@@ -93,6 +108,8 @@ private:
     uint8_t frameBits_ = 8;
     bool pixelMode_ = false; ///< CS held low with D/C high, mid-RAMWR
     int blSlice_ = -1;
+    bool uiInverted_ = false;
+    bool inited_ = false;
 };
 
 } // namespace board
