@@ -31,6 +31,7 @@ add_executable(h0urg1ass
     src/faces/digits_face.cpp
     src/faces/hourglass_face.cpp
     src/faces/splitflap_face.cpp
+    src/faces/setting_face.cpp
     src/input/orientation.cpp
     src/app/app.cpp
     src/input/dial.cpp

@@ -10,6 +10,7 @@
 
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
+#include "faces/setting_face.hpp"
 #include "faces/splitflap_face.hpp"
 #include "timer/timer_model.hpp"
 
@@ -97,6 +98,12 @@ int main(int argc, char** argv) {
     emit(fb, dir, "splitflap-tick");
     flap.render(fb, ft, 60 * SEC + 40'000ull); // mid-flip
     emit(fb, dir, "splitflap-midflip");
+
+    // The dial, at a few durations and touch radii.
+    h0::SettingFace::renderAt(fb, 0, -1);          emit(fb, dir, "dial-a-empty");
+    h0::SettingFace::renderAt(fb, 12 * 60 + 30, -1); emit(fb, dir, "dial-b-1230");
+    h0::SettingFace::renderAt(fb, 25 * 60, 88);      emit(fb, dir, "dial-c-coarse");
+    h0::SettingFace::renderAt(fb, 47 * 60 + 20, 50); emit(fb, dir, "dial-d-fine");
 
     return 0;
 }

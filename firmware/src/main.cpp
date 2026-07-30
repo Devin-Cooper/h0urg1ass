@@ -17,6 +17,7 @@
 //   1. GPIO15 goes high before anything else, or the board dies on battery.
 //   2. clk_peri must be re-pointed at PLL_SYS after set_sys_clock_khz.
 
+#include <cmath>
 #include <cstdio>
 
 #include "hardware/adc.h"
@@ -40,6 +41,7 @@
 #include "input/dial.hpp"
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
+#include "faces/setting_face.hpp"
 #include "faces/splitflap_face.hpp"
 #include "input/orientation.hpp"
 #include "timer/timer_model.hpp"
@@ -340,13 +342,26 @@ int main() {
         }
         buzzer.update(now);
 
-        h0::IFace* face = &digits;
-        switch (app.face()) {
-            case h0::FaceId::Hourglass: face = &hourglass; break;
-            case h0::FaceId::SplitFlap: face = &splitflap; break;
-            case h0::FaceId::Digits:    face = &digits; break;
+        if (app.settingPosture()) {
+            // The dial replaces the face while flat: a rotary control with no
+            // visible ring is undiscoverable, and the timer is not counting
+            // anyway.
+            int16_t touchR = -1;
+            if (tp.pressed) {
+                const float dx = static_cast<float>(tp.x - 120);
+                const float dy = static_cast<float>(tp.y - 140);
+                touchR = static_cast<int16_t>(std::sqrt(dx * dx + dy * dy));
+            }
+            h0::SettingFace::renderAt(fb, app.timer().remainingSeconds(now), touchR);
+        } else {
+            h0::IFace* face = &digits;
+            switch (app.face()) {
+                case h0::FaceId::Hourglass: face = &hourglass; break;
+                case h0::FaceId::SplitFlap: face = &splitflap; break;
+                case h0::FaceId::Digits:    face = &digits; break;
+            }
+            face->render(fb, app.timer(), now);
         }
-        face->render(fb, app.timer(), now);
         drawDebug(fb, raw, orient.current(), lastEvent, tp.pressed);
 
         lcd.pushDirty(fb, tracker.update(fb));
