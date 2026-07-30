@@ -27,11 +27,14 @@
 #include <1bit/fonts/term_6x9.hpp>
 #include <1bit/fonts/term_8x12.hpp>
 #include <1bit/render/bitmap_font.hpp>
+#include <1bit/render/dirty_rect.hpp>
 #include <1bit/render/primitives.hpp>
 #include <1bit/render/vector_font.hpp>
 
 #include "board/pins.hpp"
 #include "board/st7789_1in69.hpp"
+#include "faces/digits_face.hpp"
+#include "timer/timer_model.hpp"
 
 using onebit::BLACK;
 using onebit::WHITE;
@@ -339,14 +342,92 @@ int main() {
     printf("  208x24 strip %6lld us   (%.1fx cheaper)\n",
            static_cast<long long>(partUs),
            static_cast<double>(fullUs) / static_cast<double>(partUs));
+    sleep_ms(1500);
 
+    // ------------------------------------------------------- M3: the timer --
+    //
+    // A real countdown on the digits face. No input yet -- the orientation and
+    // dial work land in later milestones -- so this drives itself through the
+    // whole state machine on a script, which also exercises pause/resume and
+    // expiry without anyone having to sit and watch for two minutes.
+    static h0::DigitsFace face;
+    static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
+    if (!tracker.isValid()) {
+        // Not fatal: an invalid tracker reports the whole frame dirty every
+        // time, which is correct but costs a full 19 ms push per frame.
+        printf("WARN: dirty tracker alloc failed; falling back to full pushes\n");
+    }
+
+    h0::TimerModel timer;
+    timer.setDuration(20ull * 1'000'000ull);
+    timer.start(time_us_64());
+
+    printf("\ncountdown running -- 20 s, scripted pause at 15 s\n");
     beep(60); sleep_ms(80); beep(60);
-    printf("\nalive -- heartbeat every 10 s\n");
 
-    uint32_t tick = 0;
+    bool scriptedPauseDone = false;
+    bool announcedExpiry = false;
+    uint32_t frames = 0;
+    int64_t renderAcc = 0, diffAcc = 0, pushAcc = 0;
+
     while (true) {
-        sleep_ms(10000);
-        printf("[%lu] battery %.2f V\n", static_cast<unsigned long>(++tick),
-               static_cast<double>(readBatteryVolts()));
+        const uint64_t now = time_us_64();
+        timer.tick(now);
+
+        // Scripted demonstration of the transitions the IMU will drive later.
+        if (!scriptedPauseDone && timer.remainingSeconds(now) <= 15 && timer.isRunning()) {
+            timer.pause(now);
+            printf("  paused at %lu s\n",
+                   static_cast<unsigned long>(timer.remainingSeconds(now)));
+            sleep_ms(3000);
+            timer.resume(time_us_64());
+            printf("  resumed -- still %lu s, the pause was free\n",
+                   static_cast<unsigned long>(timer.remainingSeconds(time_us_64())));
+            scriptedPauseDone = true;
+            continue;
+        }
+
+        if (timer.isExpired() && !announcedExpiry) {
+            printf("  EXPIRED\n");
+            beep(120); sleep_ms(100); beep(120); sleep_ms(100); beep(400);
+            announcedExpiry = true;
+        }
+
+        const absolute_time_t r0 = get_absolute_time();
+        face.render(fb, timer, now);
+        const int64_t renderUs = absolute_time_diff_us(r0, get_absolute_time());
+
+        // Diffing and pushing are timed separately on purpose. The diff walks
+        // the whole 8,400-byte framebuffer against a shadow every frame whether
+        // anything changed or not, so its cost is a floor that does not go away
+        // when the screen is static -- and it is large enough to be mistaken
+        // for the push if the two are measured together.
+        const absolute_time_t d0 = get_absolute_time();
+        const onebit::DirtyRectList dirty = tracker.update(fb);
+        const int64_t diffUs = absolute_time_diff_us(d0, get_absolute_time());
+
+        // Push only what changed. A full frame costs ~19 ms; the digits change
+        // once a second and occupy a fraction of the panel, so this is the
+        // difference between a timer that idles and one that saturates the bus.
+        const absolute_time_t p0 = get_absolute_time();
+        lcd.pushDirty(fb, dirty);
+        lcd.waitIdle();
+        const int64_t pushUs = absolute_time_diff_us(p0, get_absolute_time());
+
+        renderAcc += renderUs;
+        diffAcc += diffUs;
+        pushAcc += pushUs;
+        if (++frames % 60 == 0) {
+            printf("  %lu frames  render %lld  diff %lld  push %lld us (avg)\n",
+                   static_cast<unsigned long>(frames),
+                   static_cast<long long>(renderAcc / 60),
+                   static_cast<long long>(diffAcc / 60),
+                   static_cast<long long>(pushAcc / 60));
+            renderAcc = diffAcc = pushAcc = 0;
+        }
+
+        // ~20 Hz. The face only changes once a second, so most of these frames
+        // find nothing dirty and cost almost nothing to push.
+        sleep_ms(50);
     }
 }
