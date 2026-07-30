@@ -33,9 +33,11 @@
 
 #include "app/app.hpp"
 #include "board/buzzer.hpp"
+#include "board/cst816.hpp"
 #include "board/pins.hpp"
 #include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
+#include "input/dial.hpp"
 #include "faces/digits_face.hpp"
 #include "faces/hourglass_face.hpp"
 #include "faces/splitflap_face.hpp"
@@ -84,6 +86,43 @@ void initI2c() {
     gpio_set_function(board::i2c::SCL, GPIO_FUNC_I2C);
     gpio_pull_up(board::i2c::SDA);
     gpio_pull_up(board::i2c::SCL);
+}
+
+/// Unwedge a stuck i2c bus.
+///
+/// i2c is open-drain and multi-drop, so a slave that was interrupted mid-byte
+/// can sit holding SDA low forever. Every device on the bus then fails, which
+/// is the tell: a fault in one part shows up as one part misbehaving, whereas a
+/// wedged bus takes the IMU and the touch controller down together.
+///
+/// The recovery is the standard one -- take the pins back as GPIO and clock SCL
+/// until the slave releases SDA, then issue a STOP and re-init the peripheral.
+void recoverI2c() {
+    gpio_set_function(board::i2c::SCL, GPIO_FUNC_SIO);
+    gpio_set_function(board::i2c::SDA, GPIO_FUNC_SIO);
+    gpio_set_dir(board::i2c::SCL, GPIO_OUT);
+    gpio_set_dir(board::i2c::SDA, GPIO_IN);
+    gpio_pull_up(board::i2c::SDA);
+
+    // Nine clocks is enough for a slave to finish any byte it was in the middle
+    // of and let go.
+    for (int i = 0; i < 9 && !gpio_get(board::i2c::SDA); ++i) {
+        gpio_put(board::i2c::SCL, 0);
+        sleep_us(5);
+        gpio_put(board::i2c::SCL, 1);
+        sleep_us(5);
+    }
+
+    // Manual STOP: SDA low->high while SCL is high.
+    gpio_set_dir(board::i2c::SDA, GPIO_OUT);
+    gpio_put(board::i2c::SDA, 0);
+    sleep_us(5);
+    gpio_put(board::i2c::SCL, 1);
+    sleep_us(5);
+    gpio_set_dir(board::i2c::SDA, GPIO_IN);
+    sleep_us(5);
+
+    initI2c();
 }
 
 /// The CST816 does not ACK its own address until RST is pulsed -- held in reset
@@ -148,7 +187,7 @@ const char* feedbackName(h0::Feedback f) {
 /// reading which component goes to +-1 is the only way to establish the axis
 /// mapping, because it depends on how the part is rotated on the PCB.
 void drawDebug(onebit::IFramebuffer& fb, const h0::Vec3& raw, h0::Orientation o,
-               const char* lastEvent) {
+               const char* lastEvent, bool touching) {
     constexpr int16_t y0 = 236;
     onebit::fillRect(fb, 0, y0, 240, 44, WHITE);
     onebit::drawLine(fb, 20, y0, 220, y0, BLACK);
@@ -157,8 +196,9 @@ void drawDebug(onebit::IFramebuffer& fb, const h0::Vec3& raw, h0::Orientation o,
     std::snprintf(line, sizeof(line), "%-8s %s", orientationName(o), lastEvent);
     onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, 26, y0 + 6, line, BLACK);
 
-    std::snprintf(line, sizeof(line), "%+.2f %+.2f %+.2f", static_cast<double>(raw.x),
-                  static_cast<double>(raw.y), static_cast<double>(raw.z));
+    std::snprintf(line, sizeof(line), "%+.2f %+.2f %+.2f%s", static_cast<double>(raw.x),
+                  static_cast<double>(raw.y), static_cast<double>(raw.z),
+                  touching ? "  T" : "");
     onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9, 26, y0 + 18, line, BLACK);
 }
 
@@ -191,6 +231,12 @@ int main() {
     const bool imuOk = imu.begin();
     printf("IMU %s", imuOk ? "ok" : "NOT FOUND");
     if (imuOk) printf(" @0x%02X rev 0x%02X", imu.address(), imu.revision());
+    printf("\n");
+
+    static board::Cst816 touch;
+    const bool touchOk = touch.begin();
+    printf("touch %s", touchOk ? "ok" : "NOT FOUND");
+    if (touchOk) printf(" id 0x%02X", touch.chipId());
     printf("\nbattery %.2f V\n", static_cast<double>(readBatteryVolts()));
 
     static board::St7789_1in69 lcd;
@@ -212,23 +258,33 @@ int main() {
     static h0::App app;
     static h0::OrientationTracker orient;
     static h0::GravityFilter filter;
+    static h0::Dial dial;
 
-    // Seed a duration. The dial lands with touch; until then the device starts
-    // with something usable so the gestures can be exercised.
     app.onMotion(h0::MotionEvent::Settled, time_us_64());
     app.setDuration(kDefaultDurationUs, time_us_64());
 
     printf("\nready -- stand it up to start, lay it flat to pause,\n");
-    printf("turn it over to reset, face down to silence\n\n");
+    printf("turn it over to reset, face down to silence.\n");
+    printf("while flat, drag around the face to set the time\n");
+    printf("  (outer ring = minutes, inner = 5-second steps)\n\n");
 
     const char* lastEvent = "";
     uint32_t frames = 0;
+    uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
 
     while (true) {
         const uint64_t now = time_us_64();
 
         h0::Vec3 raw{};
-        if (imuOk && imu.readRaw(raw)) {
+        const bool imuRead = imuOk && imu.readRaw(raw);
+        if (!imuRead) {
+            // The IMU is polled every frame, so it is the canary: if it stops
+            // answering, the bus is wedged and everything else is about to fail
+            // too. Recover once rather than limping.
+            ++imuFails;
+            recoverI2c();
+        }
+        if (imuRead) {
             const h0::Vec3 g = board::axisMap(raw);
             const h0::MotionEvent ev = orient.update(filter.push(g), now);
             if (ev != h0::MotionEvent::None) {
@@ -240,6 +296,39 @@ int main() {
                            lastEvent,
                            static_cast<unsigned long>(app.timer().remainingSeconds(now)));
                 }
+            }
+        }
+
+        // The dial is live only while the device is flat -- the setting posture.
+        // Elsewhere a pocket could rewrite a running timer, and there is no undo.
+        // Only transact when the controller says it has something. TP_INT is
+        // active low and idles high, so this costs a GPIO read instead of a bus
+        // transaction -- and crucially it means an idle (or sleeping) touch
+        // controller is never poked, which is what was wedging the bus.
+        board::TouchPoint tp{};
+        bool touchRead = false;
+        if (touchOk && gpio_get(board::touch::INT) == 0) {
+            ++touchReads;
+            touchRead = touch.read(tp);
+            if (!touchRead) ++touchFails;
+        }
+        if (touchRead) {
+            if (app.settingPosture()) {
+                const int steps = dial.update(tp.pressed, tp.x, tp.y);
+                if (steps != 0) {
+                    // Coarse at the rim, fine near the middle, so one gesture
+                    // covers both "about twenty minutes" and the last few
+                    // seconds without a mode switch.
+                    const int64_t perStep = dial.coarse() ? 60 : 5;
+                    const int64_t deltaSec = static_cast<int64_t>(steps) * perStep;
+                    int64_t secs =
+                        static_cast<int64_t>(app.timer().duration() / 1'000'000ull) + deltaSec;
+                    if (secs < 0) secs = 0;
+                    if (secs > 99 * 60 + 59) secs = 99 * 60 + 59; // the readout's ceiling
+                    app.setDuration(static_cast<uint64_t>(secs) * 1'000'000ull, now);
+                }
+            } else {
+                dial.reset(); // do not measure the next drag against a stale angle
             }
         }
 
@@ -258,16 +347,20 @@ int main() {
             case h0::FaceId::Digits:    face = &digits; break;
         }
         face->render(fb, app.timer(), now);
-        drawDebug(fb, raw, orient.current(), lastEvent);
+        drawDebug(fb, raw, orient.current(), lastEvent, tp.pressed);
 
         lcd.pushDirty(fb, tracker.update(fb));
         lcd.waitIdle();
 
         if (++frames % 200 == 0) {
-            printf("  %s  raw %+.2f %+.2f %+.2f  %lus\n", orientationName(orient.current()),
+            printf("  %s raw %+.2f %+.2f %+.2f  %lus  imuFail=%lu touchFail=%lu/%lu\n",
+                   orientationName(orient.current()),
                    static_cast<double>(raw.x), static_cast<double>(raw.y),
                    static_cast<double>(raw.z),
-                   static_cast<unsigned long>(app.timer().remainingSeconds(now)));
+                   static_cast<unsigned long>(app.timer().remainingSeconds(now)),
+                   static_cast<unsigned long>(imuFails),
+                   static_cast<unsigned long>(touchFails),
+                   static_cast<unsigned long>(touchReads));
         }
 
         sleep_ms(25); // ~40 Hz, comfortably above the 125 Hz IMU rate we need

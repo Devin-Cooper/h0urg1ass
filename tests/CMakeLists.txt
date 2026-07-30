@@ -26,6 +26,7 @@ target_include_directories(onebit_host PUBLIC ${ONEBIT_ROOT}/include ${ONEBIT_RO
 add_library(h0_input STATIC
     ${FW_SRC}/input/orientation.cpp
     ${FW_SRC}/app/app.cpp
+    ${FW_SRC}/input/dial.cpp
 )
 target_include_directories(h0_input PUBLIC ${FW_SRC})
 
@@ -42,6 +43,7 @@ add_executable(h0urg1ass_tests
     test_faces.cpp
     test_orientation.cpp
     test_app.cpp
+    test_dial.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE
