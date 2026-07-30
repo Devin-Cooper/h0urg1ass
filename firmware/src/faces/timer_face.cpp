@@ -58,7 +58,11 @@ static_assert(kLabelY + 9 <= sandgeom::LINTEL_IN_Y + sandgeom::LINTEL_IN_H,
 /// So the separator is not a flap cell at all -- it never changes, so it is
 /// drawn as static ink, and the board becomes two independent two-cell units.
 const char kSequence[] = "9876543210";
-constexpr int16_t kSequenceLen = 10;
+// Derived, never written by hand. Upstream shipped a default sequence declaring
+// 40 for a 41-character literal, which made the last character unreachable --
+// findInSequence fell through to index 0 and silently rendered the wrong glyph,
+// with no diagnostic. The same typo here would be just as quiet.
+constexpr int16_t kSequenceLen = static_cast<int16_t>(sizeof(kSequence) - 1);
 
 /// One two-cell unit, at a given column offset.
 onebit::SplitFlapConfig makeConfig(int16_t col0) {
@@ -213,8 +217,12 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
     onebit::fillRect(fb, sandgeom::LINTEL_IN_X, sandgeom::LINTEL_IN_Y,
                      sandgeom::LINTEL_IN_W, sandgeom::LINTEL_IN_H, WHITE);
 
-    // No fb.clear() here: the library's render() only ever writes ink, which is
-    // exactly what lets it composite over the sand.
+    // No fb.clear() here. The widget writes ink, plus -- since the falling-card
+    // rework -- a WHITE clear behind each card so it can occlude what it passes
+    // over. That clear is confined to the card's own cell, which sits inside the
+    // knockout above, so it lands on paper that is already white and the sand
+    // outside is untouched. Pinned by a test, because it is a property of code
+    // this repo does not own.
     mins_.render(fb);
     drawSeparator(fb);
     secs_.render(fb);

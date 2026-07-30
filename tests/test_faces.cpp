@@ -198,6 +198,42 @@ TEST_CASE("the composite is sand everywhere outside the housing") {
 
 // ------------------------------------------------------------- the drain --
 
+TEST_CASE("a flip in progress never erases sand outside the housing") {
+    // The library's split-flap models a hinged card that falls through 180
+    // degrees, and it CLEARS ITS DESTINATION to WHITE to occlude what it passes
+    // over -- the one place the widget writes paper rather than ink. This face
+    // composites that widget over a sand simulation, so an erase that reached
+    // past the card's own cell would punch a white hole in the sand once per
+    // flap. It is clipped today; this pins it, because it is a property of code
+    // this repo does not own and cannot see change.
+    h0::TimerModel t;
+    t.setDuration(300 * SEC);
+    t.start(0);
+    h0::TimerFace face;
+    face.restart(t, 1234u);
+
+    uint64_t now = 0;
+    runTo(face, t, now, 100 * SEC);
+
+    // Sweep a whole second at 60 Hz so every phase of a flap is covered, not
+    // just the settled frames the goldens happen to capture.
+    for (int i = 0; i < 60; ++i) {
+        const uint64_t nw = now + static_cast<uint64_t>(i) * 16'666ull;
+        Panel composed;
+        face.render(composed, t, nw);
+
+        Panel bare;
+        bare.clear(WHITE);
+        h0::SandGrid drawn = h0::makeVessel(h0::SandVessel::kHoleHalf);
+        h0::drawLintelOutline(drawn);
+        h0::renderSand(bare, face.sand(), drawn);
+
+        CAPTURE(i);
+        REQUIRE(diff(composed, bare, h0::sandgeom::LINTEL_X, h0::sandgeom::LINTEL_Y,
+                     h0::sandgeom::LINTEL_W, h0::sandgeom::LINTEL_H, false) == 0);
+    }
+}
+
 TEST_CASE("sand is conserved for the whole run") {
     for (int grains : {400, 900, 2000}) {
         h0::SandVessel v;
