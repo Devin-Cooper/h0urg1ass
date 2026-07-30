@@ -27,6 +27,7 @@ add_library(h0_input STATIC
     ${FW_SRC}/input/orientation.cpp
     ${FW_SRC}/app/app.cpp
     ${FW_SRC}/input/drag_column.cpp
+    ${FW_SRC}/sand/sand_sim.cpp
 )
 target_include_directories(h0_input PUBLIC ${FW_SRC})
 
@@ -45,6 +46,7 @@ add_executable(h0urg1ass_tests
     test_orientation.cpp
     test_app.cpp
     test_drag_column.cpp
+    test_sand.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE
