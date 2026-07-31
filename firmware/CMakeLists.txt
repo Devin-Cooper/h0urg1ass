@@ -53,6 +53,7 @@ add_executable(h0urg1ass
     src/input/orientation.cpp
     src/app/app.cpp
     src/input/drag_column.cpp
+    src/app/settings_ui.cpp
     src/sand/sand_sim.cpp
     src/sand/sand_render.cpp
     src/sand/sand_vessel.cpp

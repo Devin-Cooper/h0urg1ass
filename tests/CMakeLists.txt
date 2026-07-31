@@ -23,13 +23,6 @@ target_include_directories(onebit_host PUBLIC ${ONEBIT_ROOT}/include ${ONEBIT_RO
 # The faces, built for the host. Nothing under firmware/src/faces or
 # firmware/src/timer may include a pico-sdk header -- that separation is what
 # makes this build possible, and this target is what enforces it.
-add_library(h0_input STATIC
-    ${FW_SRC}/input/orientation.cpp
-    ${FW_SRC}/app/app.cpp
-    ${FW_SRC}/input/drag_column.cpp
-)
-target_include_directories(h0_input PUBLIC ${FW_SRC})
-
 add_library(h0_settings STATIC
     ${FW_SRC}/settings/settings.cpp
     ${FW_SRC}/settings/rows.cpp
@@ -39,6 +32,17 @@ add_library(h0_settings STATIC
 )
 target_include_directories(h0_settings PUBLIC ${FW_SRC})
 target_link_libraries(h0_settings PUBLIC onebit_host)
+
+add_library(h0_input STATIC
+    ${FW_SRC}/input/orientation.cpp
+    ${FW_SRC}/app/app.cpp
+    ${FW_SRC}/input/drag_column.cpp
+    ${FW_SRC}/app/settings_ui.cpp
+)
+target_include_directories(h0_input PUBLIC ${FW_SRC})
+# settings_ui.cpp needs the rows table. h0_settings must not link back to
+# h0_input, or the two libraries form a cycle.
+target_link_libraries(h0_input PUBLIC h0_settings)
 
 add_library(h0_faces STATIC
     ${FW_SRC}/faces/timer_face.cpp
@@ -61,6 +65,7 @@ add_executable(h0urg1ass_tests
     test_settings.cpp
     test_settings_codec.cpp
     test_settings_store.cpp
+    test_settings_ui.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE
