@@ -92,6 +92,21 @@ int cellDiff(const h0::SandGrid& a, const h0::SandGrid& b, int cx0, int cy0, int
     return n;
 }
 
+/// What fraction of a PIXEL rect has sand behind it, as a percentage.
+///
+/// A second, independent derivation of the number `TimerFace` latches its cell
+/// polarity on. The face is asked what it decided; this says what the sand
+/// actually is, so the two can be compared instead of the test simply believing
+/// whatever the face reports.
+int coveragePct(const h0::SandGrid& g, const h0::Rect16& r) {
+    const int cx0 = (r.x - h0::sandgeom::ORIGIN_X) / h0::sandgeom::SCALE;
+    const int cy0 = (r.y - h0::sandgeom::ORIGIN_Y) / h0::sandgeom::SCALE;
+    const int cx1 = (r.x + r.w - 1 - h0::sandgeom::ORIGIN_X) / h0::sandgeom::SCALE;
+    const int cy1 = (r.y + r.h - 1 - h0::sandgeom::ORIGIN_Y) / h0::sandgeom::SCALE;
+    const int total = (cx1 - cx0 + 1) * (cy1 - cy0 + 1);
+    return total ? 100 * cellsInRect(g, cx0, cy0, cx1, cy1) / total : 0;
+}
+
 /// Pixels in the rect that are NOT the complement of each other. Zero means
 /// every single pixel flipped -- which is what a polarity inversion is.
 int complementIn(const onebit::IFramebuffer& a, const onebit::IFramebuffer& b, int16_t x0,
@@ -431,6 +446,137 @@ TEST_CASE("the panel is dark ink on white paper, in every state, with a border")
             CHECK(interior > 200);        // the readout drew something
             CHECK(interior < area / 4);   // and it is ink on paper, not paper on ink
         }
+    }
+}
+
+TEST_CASE("a flap cell inverts exactly when sand is behind it") {
+    // The readout is a gauge as well as a clock. Each cell is solid: a covered
+    // cell is the exact COMPLEMENT of the uncovered rendering, never a blend, so
+    // the contrast is total at every sand density.
+    //
+    // Three legs, because one is not enough to say anything:
+    //
+    //   S   the sand is nowhere near the board -- the resting case, and the one
+    //       the goldens capture. Nothing may invert.
+    //   NW  the sand is driven against the ceiling and to the LEFT, so the left
+    //       of the board is covered and the right is not.
+    //   NE  the mirror image.
+    //
+    // The last two are what make this a test of PER-CELL polarity rather than
+    // of one global flag: the covered set is different in each, and in both it
+    // is a strict subset. A single leg with every cell covered would pass
+    // against an implementation that inverted the whole panel.
+    onebit::init();
+
+    const h0::Gravity dirs[3] = {h0::Gravity::S, h0::Gravity::NW, h0::Gravity::NE};
+    const char* names[3] = {"S", "NW", "NE"};
+    bool coveredSet[3][5] = {};
+    int nCovered[3] = {0, 0, 0};
+
+    for (int leg = 0; leg < 3; ++leg) {
+        h0::TimerModel t;
+        t.setDuration(300 * SEC); // > 180 s -> the 2000-grain tier
+        t.start(0);
+
+        h0::TimerFace charged;
+        charged.restart(t, 11u);
+        charged.setGravity(dirs[leg]);
+        h0::TimerFace bare; // vessel never begun: no sand, no walls
+
+        // Long enough for the tilt to settle the sand where it is going; the
+        // configurations above are stable from about 200 ticks to 3000.
+        uint64_t now = 0;
+        runTo(charged, t, now, 7 * SEC);
+
+        // Both faces render for the FIRST time here, so both snap rather than
+        // cascade and the board content is identical. The only thing that can
+        // differ inside a cell is its polarity.
+        Panel a, b;
+        charged.render(a, t, now);
+        bare.render(b, t, now);
+
+        for (int c = 0; c < 5; ++c) {
+            const h0::Rect16 r = charged.cellRect(c);
+            const int pct = coveragePct(charged.sand(), r);
+            coveredSet[leg][c] = charged.cellCovered(c);
+            CAPTURE(names[leg]);
+            CAPTURE(c);
+            CAPTURE(pct);
+            if (charged.cellCovered(c)) {
+                ++nCovered[leg];
+                // The latch starts false and this is the first frame, so
+                // "covered" means exactly "crossed the upper threshold".
+                CHECK(pct > 60);
+                CHECK(complementIn(a, b, r.x, r.y, r.w, r.h) == 0); // every pixel flipped
+            } else {
+                CHECK(pct <= 60);
+                CHECK(diff(a, b, r.x, r.y, r.w, r.h, true) == 0); // every pixel equal
+            }
+        }
+    }
+
+    // Both branches were exercised, or the loop above proved only one of them.
+    CAPTURE(nCovered[0]);
+    CAPTURE(nCovered[1]);
+    CAPTURE(nCovered[2]);
+    CHECK(nCovered[0] == 0);              // upright, the board is above the sand
+    CHECK(nCovered[1] > 0);
+    CHECK(nCovered[1] < 5);
+    CHECK(nCovered[2] > 0);
+    CHECK(nCovered[2] < 5);
+
+    // ...and the two tilts covered DIFFERENT cells. This is the assertion that
+    // a single global polarity flag cannot pass.
+    bool differ = false;
+    for (int c = 0; c < 5; ++c) differ = differ || (coveredSet[1][c] != coveredSet[2][c]);
+    CHECK(differ);
+}
+
+TEST_CASE("every flap cell carries both colours, whatever is behind it") {
+    // The black-on-black failure this whole design risks, stated directly: a
+    // cell that is uniformly one colour is unreadable, regardless of why.
+    //
+    // Both legs matter. Upright, no cell inverts and this is the old guarantee
+    // restated against the composited panel. Packed against the ceiling, every
+    // cell inverts and the same bound has to hold of the complement -- which is
+    // where an inversion that flipped the glyph but not its background, or the
+    // background but not the glyph, would show up as a solid block.
+    onebit::init();
+    for (int leg = 0; leg < 2; ++leg) {
+        h0::TimerModel t;
+        t.setDuration(300 * SEC);
+        t.start(0);
+        h0::TimerFace face;
+        face.restart(t, 9u);
+        face.setGravity(leg ? h0::Gravity::N : h0::Gravity::S);
+
+        uint64_t now = 0;
+        bool sawInverted = false, sawUpright = false;
+        for (int step = 0; step < 12; ++step) {
+            runTo(face, t, now, now + 20 * SEC);
+            Panel fb;
+            face.render(fb, t, now);
+            for (int c = 0; c < 5; ++c) {
+                const h0::Rect16 r = face.cellRect(c);
+                const int ink = inkInRect(fb, r.x, r.y, r.w, r.h);
+                const int total = r.w * r.h;
+                if (face.cellCovered(c)) sawInverted = true; else sawUpright = true;
+                CAPTURE(leg);
+                CAPTURE(step);
+                CAPTURE(c);
+                CAPTURE(ink);
+                CAPTURE(total);
+                CHECK(ink > total / 20);         // not blank
+                CHECK(ink < total - total / 20); // not solid
+            }
+        }
+        // LOAD-BEARING. Without it the inverted leg could quietly stop
+        // inverting -- the sand configuration is the test fixture here, and a
+        // fixture that stops producing the state under test takes the assertion
+        // with it while staying green.
+        CAPTURE(leg);
+        CHECK(sawInverted == (leg == 1));
+        CHECK(sawUpright == (leg == 0));
     }
 }
 

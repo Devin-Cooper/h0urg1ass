@@ -7,10 +7,16 @@
 
 #include "faces/layout.hpp"
 #include "sand/agitation.hpp"
+#include "sand/sand_render.hpp"
 #include "sand/sand_vessel.hpp"
 #include "timer/timer_model.hpp"
 
 namespace h0 {
+
+/// A pixel rect. `onebit::Rect` is already exactly this -- x/y/w/h as int16_t,
+/// with contains() and intersected() on top -- so this is an alias rather than a
+/// second rect type that would need converting at every library call.
+using Rect16 = onebit::Rect;
 
 /// The timer: a split-flap readout housed in a lintel, over falling sand.
 ///
@@ -18,11 +24,23 @@ namespace h0 {
 /// board carries the *number*, and neither can do the other's job: sand alone
 /// cannot tell you it is 4:07, and a readout alone is a clock.
 ///
-/// **The readout is legible because it is a hole in a wall.** The lintel is part
-/// of the simulation's wall grid, so no grain can be inside it, and `renderSand`
-/// assigns rather than or-s -- so the interior is repainted white every frame at
-/// no cost. At one bit there is no other way to keep black glyphs off black
-/// sand that does not amount to drawing the readout twice.
+/// **The readout is legible because it is opaque and drawn last.** It used to be
+/// a hole in a wall: the lintel was part of the simulation's wall grid, so no
+/// grain could be inside it, and `renderSand` assigns rather than or-s, which
+/// repainted the interior white every frame at no cost. Black glyphs on black
+/// sand was not a drawing problem, it was physically impossible.
+///
+/// Sand fills that region now, and the guarantee is bought with draw order
+/// instead: the panel is composited AFTER the sand and after the expiry invert,
+/// so every pixel inside it is this class's responsibility.
+///
+/// **A cell whose sand is behind it is drawn inverted**, which is what keeps the
+/// contrast total instead of letting the readout compete with what is behind it
+/// -- and makes the board a coarse gauge as well as a clock. The board is
+/// rendered to a panel-sized scratch at normal polarity and each cell is then
+/// stamped either way up; it cannot be a raster-op swap, because a flipping cell
+/// writes WHITE to occlude its falling card and an Xor would turn that white
+/// into "show the sand through the card".
 ///
 /// **The flap sequence is load-bearing.** `SplitFlapDisplay` steps one character
 /// at a time, forward only, so a transition costs `(index(to) - index(from)) mod
@@ -114,6 +132,26 @@ public:
         return mins_.isFlipping() || secsTens_.isFlipping() || secsUnits_.isFlipping();
     }
 
+    /// How many cells the board has, separator included. The separator is a
+    /// cell for polarity purposes even though it never flaps: it is inside the
+    /// board's ink box, so leaving it out would leave a stripe of the opposite
+    /// polarity through the middle of the readout.
+    static constexpr int kCells = 5;
+
+    /// The pixel rect of cell `col`, in MAIN-framebuffer coordinates.
+    ///
+    /// The board itself is drawn into a panel-local scratch, so the widget's
+    /// own bounds are panel-relative; this converts back, because every caller
+    /// outside this class -- and every test -- means screen pixels by a rect.
+    /// An out-of-range column gives an empty rect rather than a wild one.
+    Rect16 cellRect(int col) const;
+
+    /// Whether cell `col` is currently stamped inverted because sand is behind
+    /// it. Latched with hysteresis in render(); see updateCoverage().
+    bool cellCovered(int col) const {
+        return (col >= 0 && col < kCells) ? covered_[col] : false;
+    }
+
     /// Grid-space accessors. Framebuffer measurements cannot separate stranded
     /// sand from lintel ink, so the sand invariants are asserted here instead.
     const SandGrid& sand() const { return vessel_.sand(); }
@@ -126,8 +164,29 @@ private:
     /// continuous. The default, restored whenever setTickHz(0) is called.
     static constexpr uint64_t kTickPeriodUs = 33'333;
 
+    /// Recompute `covered_` from the sand grid. Called once per render, before
+    /// anything is stamped.
+    void updateCoverage();
+
     SandVessel vessel_;
     Agitation agitation_;
+
+    /// The board is drawn here first, at normal polarity, and then stamped into
+    /// the frame a cell at a time -- straight, or complemented where sand is
+    /// behind that cell. Panel-sized, so a cell's source rect is just its
+    /// screen rect less the panel origin.
+    ///
+    /// A member rather than a local: 182 x 92 is 2,116 bytes, which has no
+    /// business on the stack of a function the render loop calls every frame.
+    /// A member rather than a file-scope static, too -- its lifetime is the
+    /// face's, and there is no shared mutable state to reason about.
+    onebit::Framebuffer<sandgeom::PANEL_W, sandgeom::PANEL_H> scratch_;
+
+    /// Per-cell polarity, latched. Derived from the SAND GRID rather than from
+    /// pixels: a framebuffer measurement cannot separate a grain from the
+    /// readout's own ink, which is the same argument the grid accessors above
+    /// are here for.
+    bool covered_[kCells] = {};
 
     // Three independent flap units with a painted separator between them,
     // rather than one five-cell board. A flap sequence is a cycle, so a colon

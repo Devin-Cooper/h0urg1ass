@@ -3,6 +3,7 @@
 #include <1bit/fonts/flap_13x26.hpp>
 #include <1bit/fonts/term_6x9.hpp>
 #include <1bit/render/bitmap_font.hpp>
+#include <1bit/render/blit.hpp>
 #include <1bit/render/primitives.hpp>
 
 #include <cstdio>
@@ -35,6 +36,31 @@ constexpr int16_t kSepCol = 2;
 /// 14 px band underneath for the state label.
 constexpr int16_t kBoardX = sandgeom::LINTEL_IN_X + 4; // 68
 constexpr int16_t kBoardY = sandgeom::LINTEL_IN_Y + 2; // 20
+
+/// The same origin in PANEL-local pixels, which is the space the board is
+/// actually drawn in.
+///
+/// The widget positions its cells from `SplitFlapConfig::bounds`, and those
+/// bounds used to be screen coordinates because the board was drawn straight
+/// into the frame. It is drawn into a panel-sized scratch now -- so that a cell
+/// can be stamped either way up -- and everything that draws into that scratch
+/// (`baseConfig`, `drawSeparator`) has to work in its coordinates. `cellRect()`
+/// converts back. Get this offset wrong and the whole readout lands in the wrong
+/// place, or is silently cropped by the scratch's edge; the asserts below are
+/// the tripwire for the second, which is the quiet one.
+constexpr int16_t kBoardLX = kBoardX - sandgeom::PANEL_X; // 39
+constexpr int16_t kBoardLY = kBoardY - sandgeom::PANEL_Y; // 2
+
+static_assert(kBoardLX >= 0 && kBoardLX + kBoardW <= sandgeom::PANEL_W,
+              "the board must fit the panel-local scratch it is drawn into");
+static_assert(kBoardLY >= 0 && kBoardLY + kCellH <= sandgeom::PANEL_H,
+              "the board must fit the panel-local scratch it is drawn into");
+
+// updateCoverage() divides a cell's screen rect into grid space, and integer
+// division truncates toward zero -- so a board reaching left of or above the
+// grid's origin would round the WRONG way and read the sand one cell over.
+static_assert(kBoardX >= sandgeom::ORIGIN_X && kBoardY >= sandgeom::ORIGIN_Y,
+              "the board must lie inside the sand grid for the coverage maths to hold");
 
 static_assert(kBoardX >= sandgeom::LINTEL_IN_X, "board must sit inside its housing");
 static_assert(kBoardX + kBoardW <= sandgeom::LINTEL_IN_X + sandgeom::LINTEL_IN_W,
@@ -88,7 +114,8 @@ onebit::SplitFlapConfig baseConfig(int16_t col0, int16_t cols) {
     cfg.cell_height = kCellH;
     cfg.cols = cols;
     cfg.rows = 1;
-    cfg.bounds = {static_cast<int16_t>(kBoardX + col0 * kCellW), kBoardY,
+    // PANEL-LOCAL, not screen: the board is rendered into the scratch.
+    cfg.bounds = {static_cast<int16_t>(kBoardLX + col0 * kCellW), kBoardLY,
                   static_cast<int16_t>(cols * kCellW), kCellH};
     cfg.ms_per_flap = kMsPerFlap;
     cfg.split_line_thickness = 1;
@@ -138,19 +165,65 @@ int chargeFor(uint64_t durationUs) {
 /// Draw the separator cell exactly as the library draws a flap cell -- 1 px
 /// outline, centre split line, centred glyph -- so it is indistinguishable from
 /// its neighbours. It just never moves.
+///
+/// Draws in PANEL-LOCAL coordinates, like the flap units it sits between: `fb`
+/// here is the scratch, not the frame.
 void drawSeparator(onebit::IFramebuffer& fb) {
-    const int16_t px = kBoardX + kSepCol * kCellW;
-    onebit::drawRect(fb, px, kBoardY, kCellW, kCellH, BLACK);
-    onebit::drawLine(fb, px, static_cast<int16_t>(kBoardY + kCellH / 2),
+    const int16_t px = kBoardLX + kSepCol * kCellW;
+    onebit::drawRect(fb, px, kBoardLY, kCellW, kCellH, BLACK);
+    onebit::drawLine(fb, px, static_cast<int16_t>(kBoardLY + kCellH / 2),
                      static_cast<int16_t>(px + kCellW - 1),
-                     static_cast<int16_t>(kBoardY + kCellH / 2), BLACK);
+                     static_cast<int16_t>(kBoardLY + kCellH / 2), BLACK);
     const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::FLAP_13X26, ":");
     onebit::drawBitmapText(fb, onebit::fonts::FLAP_13X26,
                            static_cast<int16_t>(px + (kCellW - w) / 2),
-                           static_cast<int16_t>(kBoardY + (kCellH - 26) / 2), ":", BLACK);
+                           static_cast<int16_t>(kBoardLY + (kCellH - 26) / 2), ":", BLACK);
 }
 
+/// Coverage above which a cell inverts, and below which it reverts.
+///
+/// Two thresholds, not one. Grains jitter at a boundary -- a cell sitting at the
+/// sand's surface gains and loses a few every tick -- and a bare threshold makes
+/// that jitter a polarity flip on consecutive frames, which reads as a fault
+/// rather than as a gauge. The gap is what turns a noisy measurement into a
+/// latched state.
+constexpr int kCoverOnPct = 60;
+constexpr int kCoverOffPct = 40;
+static_assert(kCoverOffPct < kCoverOnPct, "the hysteresis band must not be empty");
+
+static_assert(TimerFace::kCells == kCols, "the polarity latch must have one slot per cell");
+
 } // namespace
+
+Rect16 TimerFace::cellRect(int col) const {
+    if (col < 0 || col >= kCells) return Rect16{0, 0, 0, 0};
+    return Rect16{static_cast<int16_t>(kBoardX + col * kCellW), kBoardY, kCellW, kCellH};
+}
+
+void TimerFace::updateCoverage() {
+    for (int c = 0; c < kCells; ++c) {
+        const Rect16 r = cellRect(c);
+        // The cell's pixel rect in GRID space: every grid cell the rect TOUCHES,
+        // taken from its first and last pixel. A grid cell is SCALE px, so a
+        // rect that begins or ends part-way through one is still standing on
+        // that grain and has to count it.
+        const int cx0 = (r.x - sandgeom::ORIGIN_X) / sandgeom::SCALE;
+        const int cy0 = (r.y - sandgeom::ORIGIN_Y) / sandgeom::SCALE;
+        const int cx1 = (r.x + r.w - 1 - sandgeom::ORIGIN_X) / sandgeom::SCALE;
+        const int cy1 = (r.y + r.h - 1 - sandgeom::ORIGIN_Y) / sandgeom::SCALE;
+
+        int occupied = 0, total = 0;
+        for (int cy = cy0; cy <= cy1; ++cy) {
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                ++total;
+                if (vessel_.sand().get(cx, cy)) ++occupied;
+            }
+        }
+        const int pct = total ? (occupied * 100) / total : 0;
+        if (!covered_[c] && pct > kCoverOnPct) covered_[c] = true;
+        else if (covered_[c] && pct < kCoverOffPct) covered_[c] = false;
+    }
+}
 
 TimerFace::TimerFace()
     : mins_(makeConfig(0, 2, kSequence, kSequenceLen)),
@@ -279,16 +352,52 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
     onebit::drawRect(fb, sandgeom::PANEL_X, sandgeom::PANEL_Y,
                      sandgeom::PANEL_W, sandgeom::PANEL_H, BLACK);
 
-    // No fb.clear() here. The widget writes ink, plus -- since the falling-card
-    // rework -- a WHITE clear behind each card so it can occlude what it passes
-    // over. That clear is confined to the card's own cell, which sits inside the
-    // knockout above, so it lands on paper that is already white and the sand
-    // outside is untouched. Pinned by a test, because it is a property of code
-    // this repo does not own.
-    mins_.render(fb);
-    drawSeparator(fb);
-    secsTens_.render(fb);
-    secsUnits_.render(fb);
+    // Which cells have sand behind them. From the grid, before anything is
+    // drawn -- the frame at this point is sand plus a white panel, and no pixel
+    // measurement of it could tell a grain from the readout's own ink.
+    updateCoverage();
+
+    // The board is drawn on paper, and then each cell is stamped down either
+    // way up.
+    //
+    // It cannot be done by compositing the widget with a different raster op:
+    // the widget writes ink with Or, but a cell mid-flip CLEARS ITS CARD TO
+    // WHITE to occlude what it passes over, and under Xor that white would come
+    // out as "show the sand through the falling card" -- a hole in the readout,
+    // once per flap, exactly when the eye is on it. So the polarity is applied
+    // to the finished cell, not to the drawing of it.
+    //
+    // No clear inside the loop, either: the scratch is cleared once here, which
+    // is the same white page the widget used to draw onto directly.
+    //
+    // A side effect worth naming, since a test pins it: the widget's white
+    // occlusion clear can no longer reach the sand AT ALL. It used to be safe
+    // only because it stayed inside the knockout; now it cannot leave this
+    // buffer.
+    scratch_.clear(WHITE);
+    mins_.render(scratch_);
+    drawSeparator(scratch_);
+    secsTens_.render(scratch_);
+    secsUnits_.render(scratch_);
+
+    for (int c = 0; c < kCells; ++c) {
+        const Rect16 r = cellRect(c);
+        const onebit::Rect src{static_cast<int16_t>(r.x - sandgeom::PANEL_X),
+                               static_cast<int16_t>(r.y - sandgeom::PANEL_Y), r.w, r.h};
+        if (covered_[c]) {
+            // Black paper, then Xor: 1 ^ src == ~src, so the cell lands as the
+            // exact complement of itself -- glyph, border, split line and
+            // background all flipped together. Inverting a finished rect is the
+            // one thing `invertSafeBox` does, and it does it only for the safe
+            // box, byte-aligned; rather than write a second inverter for
+            // arbitrary rects, this gets the same result out of the blit that
+            // has to happen anyway.
+            onebit::fillRect(fb, r.x, r.y, r.w, r.h, BLACK);
+            onebit::blit(fb, r.x, r.y, scratch_, src, onebit::RasterOp::Xor);
+        } else {
+            onebit::blit(fb, r.x, r.y, scratch_, src, onebit::RasterOp::Copy);
+        }
+    }
 
     const char* label = nullptr;
     switch (t.state()) {
