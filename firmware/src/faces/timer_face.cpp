@@ -374,28 +374,48 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
     // occlusion clear can no longer reach the sand AT ALL. It used to be safe
     // only because it stayed inside the knockout; now it cannot leave this
     // buffer.
-    scratch_.clear(WHITE);
-    mins_.render(scratch_);
-    drawSeparator(scratch_);
-    secsTens_.render(scratch_);
-    secsUnits_.render(scratch_);
+    //
+    // GUARDED, and this branch is load-bearing. `onebit::Framebuffer` allocates
+    // its storage on the heap and has no error path: a failed allocation leaves
+    // it valid-looking but empty, reporting that only through `isValid()`, and
+    // silently discarding every draw. A covered cell is stamped in TWO steps
+    // and only the second one reads the scratch -- so with an invalid scratch
+    // the black fill below would still land and the Xor that was going to turn
+    // it into the cell's complement would do nothing, leaving a solid black
+    // slab. That is precisely the black-on-black failure this whole design
+    // exists to prevent, reached from the other side: not sand showing through
+    // the readout, but the readout painting itself out. 2,116 bytes is a small
+    // ask and it will almost always succeed; "almost always" is not a
+    // legibility guarantee.
+    //
+    // Blank is the right degradation. The panel is already white paper with a
+    // border at this point, so the failure reads as a readout with no digits --
+    // obviously broken rather than quietly unreadable -- and the sand behind it
+    // is untouched.
+    if (scratch_.isValid()) {
+        scratch_.clear(WHITE);
+        mins_.render(scratch_);
+        drawSeparator(scratch_);
+        secsTens_.render(scratch_);
+        secsUnits_.render(scratch_);
 
-    for (int c = 0; c < kCells; ++c) {
-        const Rect16 r = cellRect(c);
-        const onebit::Rect src{static_cast<int16_t>(r.x - sandgeom::PANEL_X),
-                               static_cast<int16_t>(r.y - sandgeom::PANEL_Y), r.w, r.h};
-        if (covered_[c]) {
-            // Black paper, then Xor: 1 ^ src == ~src, so the cell lands as the
-            // exact complement of itself -- glyph, border, split line and
-            // background all flipped together. Inverting a finished rect is the
-            // one thing `invertSafeBox` does, and it does it only for the safe
-            // box, byte-aligned; rather than write a second inverter for
-            // arbitrary rects, this gets the same result out of the blit that
-            // has to happen anyway.
-            onebit::fillRect(fb, r.x, r.y, r.w, r.h, BLACK);
-            onebit::blit(fb, r.x, r.y, scratch_, src, onebit::RasterOp::Xor);
-        } else {
-            onebit::blit(fb, r.x, r.y, scratch_, src, onebit::RasterOp::Copy);
+        for (int c = 0; c < kCells; ++c) {
+            const Rect16 r = cellRect(c);
+            const onebit::Rect src{static_cast<int16_t>(r.x - sandgeom::PANEL_X),
+                                   static_cast<int16_t>(r.y - sandgeom::PANEL_Y), r.w, r.h};
+            if (covered_[c]) {
+                // Black paper, then Xor: 1 ^ src == ~src, so the cell lands as
+                // the exact complement of itself -- glyph, border, split line
+                // and background all flipped together. Inverting a finished
+                // rect is the one thing `invertSafeBox` does, and it does it
+                // only for the safe box, byte-aligned; rather than write a
+                // second inverter for arbitrary rects, this gets the same
+                // result out of the blit that has to happen anyway.
+                onebit::fillRect(fb, r.x, r.y, r.w, r.h, BLACK);
+                onebit::blit(fb, r.x, r.y, scratch_, src, onebit::RasterOp::Xor);
+            } else {
+                onebit::blit(fb, r.x, r.y, scratch_, src, onebit::RasterOp::Copy);
+            }
         }
     }
 

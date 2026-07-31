@@ -180,6 +180,11 @@ private:
     /// business on the stack of a function the render loop calls every frame.
     /// A member rather than a file-scope static, too -- its lifetime is the
     /// face's, and there is no shared mutable state to reason about.
+    ///
+    /// Those 2,116 bytes come off the heap and the constructor has no way to
+    /// report failing to get them, so `render()` checks `isValid()` before it
+    /// draws. It must: a covered cell is a black fill followed by an Xor blit,
+    /// and an invalid scratch swallows the blit while the fill still lands.
     onebit::Framebuffer<sandgeom::PANEL_W, sandgeom::PANEL_H> scratch_;
 
     /// Per-cell polarity, latched. Derived from the SAND GRID rather than from

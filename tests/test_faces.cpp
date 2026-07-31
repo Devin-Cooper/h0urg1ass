@@ -1,8 +1,10 @@
 #include "doctest.h"
+#include <cstdlib>
 #include <cstring>
 
 #include "golden.hpp"
 
+#include <1bit/core/allocator.hpp>
 #include <1bit/core/framebuffer.hpp>
 #include <1bit/fonts/term_8x12.hpp>
 
@@ -578,6 +580,176 @@ TEST_CASE("every flap cell carries both colours, whatever is behind it") {
         CHECK(sawInverted == (leg == 1));
         CHECK(sawUpright == (leg == 0));
     }
+}
+
+TEST_CASE("a cell's polarity is latched, and holds inside the hysteresis band") {
+    // The band is the difference between a gauge and a fault. A grain jitters
+    // at the sand's surface, so a cell sitting there gains and loses a few
+    // every tick; under a bare threshold that jitter is a polarity flip on
+    // consecutive frames, and the readout strobes. Two thresholds turn the
+    // noisy measurement into a latched state.
+    //
+    // The invariant, checked at every single frame: A CELL ONLY EVER CHANGES
+    // POLARITY WITH ITS COVERAGE OUTSIDE THE BAND -- above 60% to invert,
+    // below 40% to revert. Inside 40..60 the latch holds whatever it already
+    // was, which is exactly what a bare threshold cannot do.
+    //
+    // This is airtight rather than sampled, because `render()` is the only
+    // thing that moves the latch and this renders every tick: if the latch
+    // moved between two observations, it moved on the frame being observed.
+    // That is why `runTo` is not used here.
+    //
+    // The fixture: tip NW to bury the board, then tip W, which drains it
+    // slowly enough that cells cross the band on the way down and linger
+    // there. Constructing a cell that sits at 40..60 was the open question --
+    // it needs a retreating surface rather than a settled pile, and no static
+    // tilt produces one.
+    onebit::init();
+
+    h0::TimerModel t;
+    t.setDuration(300 * SEC);
+    t.start(0);
+    h0::TimerFace face;
+    face.restart(t, 9u);
+    face.setGravity(h0::Gravity::NW);
+
+    Panel fb;
+    uint64_t now = 0;
+    bool was[5] = {}; // the latch starts false, which is the state before frame 0
+    int heldOn = 0, heldOff = 0, changes = 0;
+
+    for (int tick = 0; tick < 700; ++tick) {
+        now += 33'333ull;
+        face.tick(t, now);
+        if (tick == 209) face.setGravity(h0::Gravity::W); // let it fall away again
+        face.render(fb, t, now);
+
+        for (int c = 0; c < 5; ++c) {
+            // Measured from the grid, independently of what the face reports.
+            const int pct = coveragePct(face.sand(), face.cellRect(c));
+            const bool covered = face.cellCovered(c);
+            if (covered != was[c]) {
+                ++changes;
+                CAPTURE(tick);
+                CAPTURE(c);
+                CAPTURE(pct);
+                CAPTURE(covered);
+                if (covered) CHECK(pct > 60);
+                else CHECK(pct < 40);
+            } else if (pct >= 40 && pct <= 60) {
+                if (covered) ++heldOn;  // stayed inverted below the ON threshold
+                else ++heldOff;         // stayed upright above the OFF threshold
+            }
+            was[c] = covered;
+        }
+    }
+
+    // FIXTURE INTEGRITY, and it is the whole test. The invariant above is
+    // vacuous unless the run actually spends frames inside the band in BOTH
+    // latch states -- a cell holding ON below 60 is what a bare threshold
+    // would have reverted, and a cell holding OFF above 40 is what a bare
+    // threshold would have inverted. Measured: 171 and 21.
+    CAPTURE(heldOn);
+    CAPTURE(heldOff);
+    CAPTURE(changes);
+    CHECK(heldOn > 50);
+    CHECK(heldOff > 5);
+    CHECK(changes >= 4);
+}
+
+namespace {
+
+/// An allocator that refuses one exact allocation size and passes everything
+/// else through to malloc, so a single named buffer can be made to fail while
+/// the rest of the process allocates normally.
+size_t g_denySize = 0;
+int g_denied = 0;
+
+void* denyingAlloc(size_t n, void*) {
+    if (g_denySize != 0 && n == g_denySize) {
+        ++g_denied;
+        return nullptr;
+    }
+    return std::malloc(n);
+}
+void denyingFree(void* p, void*) { std::free(p); }
+
+/// Installs the denying allocator for a scope and restores the default one on
+/// the way out. A scope guard rather than two statements because the allocator
+/// is process-global: leaking it out of this test would let it deny an
+/// allocation in some later, unrelated one, and doctest's fatal assertions
+/// leave by throwing.
+struct DenyAlloc {
+    explicit DenyAlloc(size_t size) {
+        g_denySize = size;
+        g_denied = 0;
+        onebit::init(onebit::Allocator{denyingAlloc, denyingFree, nullptr});
+    }
+    ~DenyAlloc() {
+        g_denySize = 0;
+        onebit::init();
+    }
+};
+
+} // namespace
+
+TEST_CASE("a readout whose scratch buffer could not be allocated goes blank, not black") {
+    // The black-on-black failure, arrived at from the side the sand cannot
+    // reach. `onebit::Framebuffer` takes its storage from the heap and the
+    // constructor has no error path: a failed allocation leaves an object that
+    // looks fine, reports it only through `isValid()`, and silently discards
+    // every draw. A covered cell is stamped in two steps -- fill the rect
+    // BLACK, then Xor the board over it -- and only the second step reads the
+    // scratch. Swallow that blit and the cell is a solid black slab.
+    //
+    // Unreachable on the host by accident, since malloc does not fail here, so
+    // the failure is injected: deny allocations of exactly the scratch's size
+    // and nothing else. 2,116 bytes on a device with a few hundred KB is a
+    // small ask that will nearly always succeed, and "nearly always" is not
+    // what the rest of this file spends its assertions establishing.
+    using Scratch = onebit::Framebuffer<h0::sandgeom::PANEL_W, h0::sandgeom::PANEL_H>;
+
+    onebit::init();
+    int covered = 0, denied = 0;
+    {
+        DenyAlloc deny(Scratch::BUFFER_SIZE);
+
+        h0::TimerModel t;
+        t.setDuration(300 * SEC);
+        t.start(0);
+        h0::TimerFace face; // its scratch is the allocation being refused
+        face.restart(t, 11u);
+        face.setGravity(h0::Gravity::N); // bury the board: every cell wants inverting
+
+        Panel fb; // 8,400 bytes -- a different size, so this one succeeds
+        uint64_t now = 0;
+        runTo(face, t, now, 7 * SEC);
+        face.render(fb, t, now);
+
+        for (int c = 0; c < 5; ++c) {
+            const h0::Rect16 r = face.cellRect(c);
+            const int ink = inkInRect(fb, r.x, r.y, r.w, r.h);
+            const int total = r.w * r.h;
+            if (face.cellCovered(c)) ++covered;
+            CAPTURE(c);
+            CAPTURE(ink);
+            CAPTURE(total);
+            CHECK(ink < total); // NOT a solid black slab -- the whole point
+            CHECK(ink == 0);    // ...and specifically blank paper inside the panel
+        }
+        denied = g_denied;
+    }
+
+    // FIXTURE INTEGRITY, both halves, because either one failing quietly makes
+    // the assertions above pass against anything. The scratch has to have been
+    // refused exactly once -- not zero times, and not more, which would mean
+    // the size collided with some other buffer -- and the cells have to be on
+    // the COVERED branch, since the uncovered branch never fills black and
+    // could not produce a slab in the first place.
+    CAPTURE(denied);
+    CAPTURE(covered);
+    CHECK(denied == 1);
+    CHECK(covered == 5);
 }
 
 TEST_CASE("the lintel interior is empty in the wall grid, so sand cannot enter it") {
