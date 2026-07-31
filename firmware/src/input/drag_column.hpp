@@ -26,8 +26,10 @@ public:
 
     /// Velocity acceleration.
     ///
-    /// At one unit per 34 px, setting twenty-five minutes would be four
-    /// full-height drags. Every picker solves this the same way: a quick flick
+    /// At one unit per 34 px, twenty-five minutes is five full-height drags.
+    /// That is the traversal cost acceleration buys back -- and it buys it at
+    /// the price of the landing point, so it is opt-in rather than default.
+    /// Every picker solves this the same way: a quick flick
     /// is worth more per pixel than a careful nudge, so the same control gives
     /// both coarse traversal and single-unit precision without a mode switch.
     ///
@@ -43,10 +45,15 @@ public:
 
     /// Cap the velocity gain, in quarters.
     ///
-    /// Defaults to kGainMax. Set to kGainBase to collapse the curve to exactly
-    /// 1x, with the sub-unit residual carry intact -- which is what a short
-    /// ladder wants: a settings wheel with four entries under a 5x flick is a
-    /// slot machine, while the 151-entry CAL wheel genuinely needs the gain.
+    /// Defaults to kGainBase -- exactly 1x, so the wheel travels precisely as
+    /// far as the finger. Acceleration is opt-in, because it and landing on a
+    /// value are mutually exclusive: measured, the same 170 px gesture commits
+    /// 7 to 25 units depending only on speed, and redistributing the same
+    /// travel across a different velocity profile moves it another 5. There is
+    /// no motor plan a user can learn.
+    ///
+    /// Set to kGainMax on a wheel whose ladder is long enough that traversal
+    /// beats precision -- CAL's 151 entries are the only such case.
     void setGainMax(int16_t quarters) { gainMax_ = quarters; }
     int16_t gainMax() const { return gainMax_; }
 
@@ -70,7 +77,7 @@ private:
     bool tracking_ = false;
     int16_t lastY_ = 0;
     int16_t residual_ = 0; ///< pixels not yet converted to a unit
-    int16_t gainMax_ = kGainMax;
+    int16_t gainMax_ = kGainBase;
 };
 
 } // namespace h0

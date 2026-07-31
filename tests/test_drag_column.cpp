@@ -92,8 +92,10 @@ TEST_CASE("the offset moves between steps, in the drag direction") {
 
 TEST_CASE("a flick covers more ground than a careful drag") {
     // The whole point of acceleration. Twenty-five minutes at one unit per
-    // 34 px would otherwise be four full-height drags.
+    // 34 px would be five full-height drags at 1x, but a fast flick multiplies
+    // the distance significantly. The fast instance opts in explicitly.
     DragColumn slow, fast;
+    fast.setGainMax(DragColumn::kGainMax);
     const int slowSteps = drag(slow, 240, 40, 200); // 1 px per sample
     const int fastSteps = drag(fast, 240, 40, 10);  // 20 px per sample
     CHECK(fastSteps > slowSteps * 3);
@@ -156,7 +158,15 @@ TEST_CASE("acceleration can be switched off for short ladders") {
     CHECK(flick == expected);
 }
 
-TEST_CASE("the gain cap defaults to the accelerated curve") {
+TEST_CASE("the gain cap defaults to 1x, and acceleration is opt-in") {
+    // Nine of the eleven wheels in the product had already disabled the gain
+    // one call site at a time. The picker was the lone holdout, and it is the
+    // one screen where an exact value has to be hit -- measured, the same
+    // 170 px gesture committed anywhere from 7 to 25 units depending only on
+    // how fast it was performed. Opt-in is the honest default.
     DragColumn c;
+    CHECK(c.gainMax() == DragColumn::kGainBase);
+
+    c.setGainMax(DragColumn::kGainMax);
     CHECK(c.gainMax() == DragColumn::kGainMax);
 }
