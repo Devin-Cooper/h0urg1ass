@@ -141,3 +141,22 @@ TEST_CASE("reset clears the drag without emitting") {
     CHECK(c.offsetPx() == 0);
     CHECK(c.update(true, 100) == 0); // fresh reference
 }
+
+TEST_CASE("acceleration can be switched off for short ladders") {
+    // A 5x flick across a 4-entry theme wheel is a slot machine. Collapsing the
+    // gain to 1x makes a settings wheel move at finger speed while the CAL
+    // wheel, with 151 entries, keeps the acceleration it genuinely needs.
+    DragColumn plain;
+    plain.setGainMax(DragColumn::kGainBase);
+
+    // 200 px of travel in 10 samples: fast enough that the default curve would
+    // multiply it several-fold.
+    const int flick = drag(plain, 240, 40, 10);
+    const int expected = 200 / PPU; // exactly the unaccelerated distance
+    CHECK(flick == expected);
+}
+
+TEST_CASE("the gain cap defaults to the accelerated curve") {
+    DragColumn c;
+    CHECK(c.gainMax() == DragColumn::kGainMax);
+}

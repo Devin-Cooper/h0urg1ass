@@ -33,7 +33,7 @@ int DragColumn::update(bool pressed, int16_t y) {
     // flips between rates and reads as the control stuttering.
     const int16_t mag = static_cast<int16_t>(dy < 0 ? -dy : dy);
     int16_t gain4 = static_cast<int16_t>(kGainBase + mag);
-    if (gain4 > kGainMax) gain4 = kGainMax;
+    if (gain4 > gainMax_) gain4 = gainMax_;
     residual_ = static_cast<int16_t>(residual_ + (dy * gain4) / kGainBase);
 
     // Truncation toward zero, with the remainder carried. Without carrying, a

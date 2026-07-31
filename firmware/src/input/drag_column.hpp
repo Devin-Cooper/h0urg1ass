@@ -41,6 +41,15 @@ public:
     static constexpr int16_t kGainBase = 4;   ///< = 1.0x, in quarters
     static constexpr int16_t kGainMax = 20;   ///< = 5.0x
 
+    /// Cap the velocity gain, in quarters.
+    ///
+    /// Defaults to kGainMax. Set to kGainBase to collapse the curve to exactly
+    /// 1x, with the sub-unit residual carry intact -- which is what a short
+    /// ladder wants: a settings wheel with four entries under a 5x flick is a
+    /// slot machine, while the 151-entry CAL wheel genuinely needs the gain.
+    void setGainMax(int16_t quarters) { gainMax_ = quarters; }
+    int16_t gainMax() const { return gainMax_; }
+
     /// Feed a touch sample. Returns the change in units since the last call --
     /// **positive when dragging up**, matching a physical wheel turning under
     /// the finger rather than a list being scrolled.
@@ -61,6 +70,7 @@ private:
     bool tracking_ = false;
     int16_t lastY_ = 0;
     int16_t residual_ = 0; ///< pixels not yet converted to a unit
+    int16_t gainMax_ = kGainMax;
 };
 
 } // namespace h0
