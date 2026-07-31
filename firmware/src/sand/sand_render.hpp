@@ -68,6 +68,32 @@ static_assert(LINTEL_X >= safe::X && LINTEL_X + LINTEL_W <= safe::X + safe::W,
 static_assert(LINTEL_X >= safe::CORNER_R && LINTEL_X + LINTEL_W <= 240 - safe::CORNER_R,
               "lintel must clear both corner quadrants at every y");
 
+/// The readout panel. A PIXEL rect, not a grid rect: since it is composited
+/// over the sand rather than carved out of the physics, it is free of the
+/// ORIGIN + SCALE * cell quantisation the lintel had.
+///
+/// 182 x 92 at the ceiling. Budget is 204 px of vessel interior (x 18..221) --
+/// the whole safe box lies inside the rounded rect, so the full width is
+/// available at every row including the top edge.
+inline constexpr int16_t PANEL_X = 29;
+inline constexpr int16_t PANEL_Y = 18;
+inline constexpr int16_t PANEL_W = 182;
+inline constexpr int16_t PANEL_H = 92;
+
+static_assert(PANEL_X >= safe::X && PANEL_X + PANEL_W <= safe::X + safe::W,
+              "panel must lie inside the safe box");
+static_assert(PANEL_Y >= safe::Y && PANEL_Y + PANEL_H <= safe::Y + safe::H,
+              "panel must lie inside the safe box");
+
+/// The same rect in grid space, for asking what sand is behind it.
+inline constexpr int PANEL_CX0 = (PANEL_X - ORIGIN_X) / SCALE;
+inline constexpr int PANEL_CY0 = (PANEL_Y - ORIGIN_Y) / SCALE;
+inline constexpr int PANEL_CX1 = (PANEL_X + PANEL_W - 1 - ORIGIN_X) / SCALE;
+inline constexpr int PANEL_CY1 = (PANEL_Y + PANEL_H - 1 - ORIGIN_Y) / SCALE;
+
+static_assert(PANEL_CX0 >= 0 && PANEL_CX1 < SandGrid::W, "panel grid rect must be in bounds");
+static_assert(PANEL_CY0 >= 0 && PANEL_CY1 < SandGrid::H, "panel grid rect must be in bounds");
+
 } // namespace sandgeom
 
 /// Build the vessel: border, floor, and a hole of the given half-width.

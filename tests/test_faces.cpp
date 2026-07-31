@@ -69,6 +69,40 @@ int diff(const onebit::IFramebuffer& a, const onebit::IFramebuffer& b, int16_t x
     return n;
 }
 
+/// Occupied grid cells in an inclusive grid rect.
+///
+/// Grid space is the only place "is there sand behind the readout" can be
+/// asked. A framebuffer measurement cannot separate a grain from housing ink --
+/// both are just black -- so every claim about what is behind the panel has to
+/// be made here, against the simulation rather than against the picture.
+int cellsInRect(const h0::SandGrid& g, int cx0, int cy0, int cx1, int cy1) {
+    int n = 0;
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cx = cx0; cx <= cx1; ++cx)
+            if (g.get(cx, cy)) ++n;
+    return n;
+}
+
+/// Cells that differ between two grids, over an inclusive grid rect.
+int cellDiff(const h0::SandGrid& a, const h0::SandGrid& b, int cx0, int cy0, int cx1, int cy1) {
+    int n = 0;
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cx = cx0; cx <= cx1; ++cx)
+            if (a.get(cx, cy) != b.get(cx, cy)) ++n;
+    return n;
+}
+
+/// Pixels in the rect that are NOT the complement of each other. Zero means
+/// every single pixel flipped -- which is what a polarity inversion is.
+int complementIn(const onebit::IFramebuffer& a, const onebit::IFramebuffer& b, int16_t x0,
+                 int16_t y0, int16_t w, int16_t h) {
+    int n = 0;
+    for (int16_t y = y0; y < y0 + h; ++y)
+        for (int16_t x = x0; x < x0 + w; ++x)
+            if (a.getPixel(x, y) == b.getPixel(x, y)) ++n;
+    return n;
+}
+
 /// Nothing may be drawn under the rounded corners. The panel physically clips a
 /// ~44 px radius, so ink there is invisible at best and clipped text at worst.
 ///
@@ -100,6 +134,26 @@ void runTo(h0::TimerFace& face, const h0::TimerModel& t, uint64_t& now, uint64_t
 }
 
 } // namespace
+
+// ------------------------------------------------------------- the helpers --
+
+TEST_CASE("test helpers: complementIn and cellsInRect mean what they say") {
+    // These three are about to carry the readout's legibility guarantee, so
+    // pin what they actually count before anything relies on it. A helper that
+    // silently returns zero would turn every assertion built on it green.
+    Panel a, b;
+    a.clear(WHITE);
+    b.clear(BLACK);
+    CHECK(complementIn(a, b, 0, 0, 40, 40) == 0);       // total inversion
+    b.clear(WHITE);
+    CHECK(complementIn(a, b, 0, 0, 40, 40) == 40 * 40); // identical, so nothing flipped
+
+    h0::SandVessel v;
+    v.begin();
+    v.reset(3u, 400);
+    CHECK(cellsInRect(v.sand(), 0, 0, h0::SandGrid::W - 1, h0::SandGrid::H - 1) == 400);
+    CHECK(cellDiff(v.sand(), v.sand(), 0, 0, 10, 10) == 0);
+}
 
 // ------------------------------------------------- the legibility mechanism --
 
