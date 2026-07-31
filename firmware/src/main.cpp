@@ -397,6 +397,11 @@ int main() {
     static h0::SettingsUi settingsUi;
     static h0::GestureGate gestureGate;
     static h0::BatteryReading batteryReading;
+    // True once a wheel has actually ADVANCED during the current touch --
+    // distinct from mere contact, which both DragColumn::tracking() and
+    // SettingsUi::activeColumn() latch on the first, reference-establishing
+    // sample. Cleared on release, alongside the columns it shadows.
+    static bool wheelMovedThisTouch = false;
 
     // Push settings into the subsystems that own them. Called on load, on every
     // live edit, and on cancel -- so a preview and a restore go through exactly
@@ -409,6 +414,18 @@ int main() {
         tracker.markAllDirty();
         app.setAlarmTimeout(static_cast<uint64_t>(s.alarmS) * 1'000'000ull);
         // face.setMuted(s.mute != 0); -- added in Task 14; omit until then
+    };
+
+    // The picker's columns track independently of the settings menu, so
+    // closing the menu -- by any path -- must not leave them holding a
+    // reference from before it opened. Without this, the first picker sample
+    // after a close measures against a stale y and slams the dialled
+    // duration by however far the finger has moved since, amplified up to 5x
+    // by the velocity gain -- with no undo. Called from every exit path.
+    auto resetPickerColumns = [&] {
+        colMin.reset();
+        colSec.reset();
+        activeCol = 0;
     };
 
     // MUTE silences the only acknowledgement channel a wholly invisible gesture
@@ -576,6 +593,7 @@ int main() {
                     // FlatBack -- so a Flip branch here would be dead code.
                     const h0::Settings restored = settingsUi.cancel();
                     applySettings(restored);
+                    resetPickerColumns();
                     say(h0::Feedback::Rejected);
                 } else {
                     const h0::Feedback fbk = app.onMotion(ev, now);
@@ -593,6 +611,7 @@ int main() {
             // flat -> edge -> upright never produces Raised.
             if (settingsUi.isOpen() && !app.settingPosture()) {
                 applySettings(settingsUi.cancel());
+                resetPickerColumns();
                 say(h0::Feedback::Rejected);
             }
         }
@@ -677,8 +696,17 @@ int main() {
             const bool swipeEdge = tp.gestureIsNew &&
                                    (tp.gesture == board::TouchGesture::SlideLeft ||
                                     tp.gesture == board::TouchGesture::SlideRight);
-            const bool dragged = usable && (colMin.tracking() || colSec.tracking() ||
-                                            settingsUi.activeColumn() != 0);
+
+            // `dragged` means a wheel has MOVED -- not merely that a finger is
+            // in contact. DragColumn::tracking() and SettingsUi::activeColumn()
+            // both latch on the first, reference-establishing sample of a
+            // touch, which moves nothing by design; using either here would
+            // latch the gate closed on touch-down, before the controller can
+            // ever report the slide gesture that opens or commits the menu.
+            // wheelMovedThisTouch instead only goes true where real movement
+            // is observed, below, and is cleared on release alongside the
+            // columns it shadows.
+            const bool dragged = wheelMovedThisTouch;
 
             if (gestureGate.onTouch(tp.pressed, swipeEdge, dragged, now) &&
                 app.settingPosture()) {
@@ -687,6 +715,14 @@ int main() {
                     const h0::Settings out = settingsUi.commit();
                     const bool ok = settingsStore.commit(out);
                     applySettings(out);
+                    // The picker's own columns are untouched while the menu is
+                    // open, so they still hold whatever y they last saw before
+                    // it opened. Without this reset, the very next picker
+                    // sample -- this same frame, if the finger is still down --
+                    // measures against that stale reference and slams the
+                    // dialled duration by however far the finger has moved
+                    // since, amplified up to 5x by the velocity gain.
+                    resetPickerColumns();
                     // A failed write plays Rejected, not Saved. The settings
                     // still apply for this session; the user simply must not be
                     // told they persisted when they did not.
@@ -705,12 +741,14 @@ int main() {
                 colMin.reset();
                 colSec.reset();
                 activeCol = 0;
+                wheelMovedThisTouch = false;
                 settingsUi.onDrag(0, false, tp.y);
             } else if (settingsUi.isOpen()) {
                 if (usable) {
                     // Same column lock as the picker, same boundary.
                     if (activeCol == 0) activeCol = (tp.x < 120) ? 1 : 2;
                     if (settingsUi.onDrag(activeCol, true, tp.y)) {
+                        wheelMovedThisTouch = true;
                         applySettings(settingsUi.live());
                     }
                 }
@@ -726,6 +764,7 @@ int main() {
                 const int dSec = colSec.update(usable && activeCol == 2, tp.y);
 
                 if (dMin != 0 || dSec != 0) {
+                    wheelMovedThisTouch = true;
                     // Both wheels WRAP, and neither carries into the other. A
                     // seconds wheel that dragged the minutes along would make
                     // the two columns fight each other; a minutes wheel that
