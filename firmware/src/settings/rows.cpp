@@ -10,6 +10,7 @@ constexpr uint8_t  kBright[]  = {16, 24, 32, 48, 64, 96, 128, 192, 255};
 constexpr uint8_t  kDimTo[]   = {4, 8, 12, 16, 24, 36};
 constexpr uint16_t kDimAt[]   = {10, 20, 30, 60, 120, 0}; // 0 = never, and it is LAST
 constexpr uint16_t kBlankAt[] = {30, 60, 120, 300, 0};
+constexpr uint16_t kOffAt[]   = {120, 300, 600, 1800, 0}; // 0 = never, and it is LAST
 constexpr uint16_t kAlarm[]   = {15, 30, 60, 120, 300};
 
 constexpr uint8_t kThemeCount = static_cast<uint8_t>(ThemeId::Count);
@@ -48,6 +49,7 @@ const char* rowName(RowId id) {
         case RowId::DimTo:    return "DIM TO";
         case RowId::DimAt:    return "DIM AT";
         case RowId::BlankAt:  return "BLANK AT";
+        case RowId::OffAt:    return "OFF AT";
         case RowId::Alarm:    return "ALARM";
         case RowId::Sound:    return "SOUND";
         case RowId::Battery:  return "BATTERY";
@@ -65,6 +67,7 @@ uint8_t ladderSize(RowId id) {
         case RowId::DimTo:    return sizeof(kDimTo) / sizeof(kDimTo[0]);
         case RowId::DimAt:    return sizeof(kDimAt) / sizeof(kDimAt[0]);
         case RowId::BlankAt:  return sizeof(kBlankAt) / sizeof(kBlankAt[0]);
+        case RowId::OffAt:    return sizeof(kOffAt) / sizeof(kOffAt[0]);
         case RowId::Alarm:    return sizeof(kAlarm) / sizeof(kAlarm[0]);
         case RowId::Sound:    return 2;
         case RowId::Battery:  return 0; // read-only
@@ -82,6 +85,7 @@ uint8_t ladderIndex(RowId id, const Settings& s) {
         case RowId::DimTo:    return nearestIndex(kDimTo, s.backlightDim);
         case RowId::DimAt:    return nearestIndex(kDimAt, s.dimAfterS);
         case RowId::BlankAt:  return nearestIndex(kBlankAt, s.blankAfterS);
+        case RowId::OffAt:    return nearestIndex(kOffAt, s.offAfterS);
         case RowId::Alarm:    return nearestIndex(kAlarm, s.alarmS);
         case RowId::Sound:    return s.mute;
         case RowId::Cal:      return static_cast<uint8_t>((s.batCalPermille - kCalMin) / 2);
@@ -103,6 +107,7 @@ void applyLadder(RowId id, uint8_t index, Settings& s) {
         case RowId::DimTo:   s.backlightDim = entry(kDimTo, index); break;
         case RowId::DimAt:   s.dimAfterS = entry(kDimAt, index); break;
         case RowId::BlankAt: s.blankAfterS = entry(kBlankAt, index); break;
+        case RowId::OffAt:   s.offAfterS = entry(kOffAt, index); break;
         case RowId::Alarm:   s.alarmS = entry(kAlarm, index); break;
         case RowId::Sound:   s.mute = index; break;
         case RowId::Cal:

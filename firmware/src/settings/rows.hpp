@@ -10,7 +10,7 @@ namespace h0 {
 /// CLAMPS -- see app/settings_ui.cpp (SettingsUi::onDrag, around the row-wheel
 /// and value-wheel update blocks) for why that inverts the picker's rule.
 enum class RowId : uint8_t {
-    Theme, Bright, DimTo, DimAt, BlankAt, Alarm, Sound, Battery, Cal, Defaults, Count
+    Theme, Bright, DimTo, DimAt, BlankAt, OffAt, Alarm, Sound, Battery, Cal, Defaults, Count
 };
 
 uint8_t rowCount();

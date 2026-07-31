@@ -78,6 +78,10 @@ void SettingsFace::formatValue(RowId id, uint8_t index, const Settings& s,
             if (s.blankAfterS < 60) { std::snprintf(out, n, "%us", s.blankAfterS); return; }
             std::snprintf(out, n, "%um", static_cast<unsigned>(s.blankAfterS / 60));
             return;
+        case RowId::OffAt:
+            if (s.offAfterS == 0) { std::snprintf(out, n, "NEVER"); return; }
+            std::snprintf(out, n, "%um", static_cast<unsigned>(s.offAfterS / 60));
+            return;
         case RowId::Alarm:
             if (s.alarmS < 60) { std::snprintf(out, n, "%us", s.alarmS); return; }
             std::snprintf(out, n, "%um", static_cast<unsigned>(s.alarmS / 60));
