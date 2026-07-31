@@ -177,6 +177,12 @@ void St7789_1in69::setInverted(bool on) {
     if (inited_) sendCmd((geometry().invert != uiInverted_) ? 0x21 : 0x20);
 }
 
+void St7789_1in69::sleepIn() {
+    if (!inited_) return;
+    sendCmd(0x10);
+    sleep_ms(5); // the controller needs a moment before the rail goes
+}
+
 void St7789_1in69::sendCmd(uint8_t cmd, const uint8_t* params, size_t len) {
     waitIdle();
     setFrameBits(8);

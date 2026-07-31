@@ -45,6 +45,7 @@ add_executable(h0urg1ass
     src/board/st7789_1in69.cpp
     src/board/qmi8658.cpp
     src/board/buzzer.cpp
+    src/board/power_button.cpp
     src/board/cst816.cpp
     src/board/flash_store.cpp
     src/board/battery.cpp

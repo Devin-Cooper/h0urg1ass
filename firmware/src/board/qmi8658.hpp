@@ -24,6 +24,9 @@ public:
     /// Returns false if neither address responds with 0x05.
     bool begin();
 
+    /// CTRL1.SensorDisable. About 6 uA against 30 uA for accel-only low power.
+    bool powerDown();
+
     /// One accelerometer sample as a gravity direction in the PANEL frame:
     /// +x right across the screen, +y down the screen, +z out of the screen.
     ///

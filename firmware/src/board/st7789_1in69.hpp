@@ -67,6 +67,10 @@ public:
     void setInverted(bool on);
     bool inverted() const { return uiInverted_; }
 
+    /// ST7789 SLPIN (0x10). Blanks the panel itself, so the backlight must
+    /// already be at zero or this shows a lit blank screen.
+    void sleepIn();
+
     /// Set the theme's ink and paper. Must be followed by a full-frame push --
     /// the dirty-rect tracker has no idea the colours moved, so nothing repaints
     /// on its own.

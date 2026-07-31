@@ -88,6 +88,16 @@ bool Qmi8658::begin() {
     return true;
 }
 
+bool Qmi8658::powerDown() {
+    // CTRL1 bit 0 is SensorDisable. Read-modify-write rather than a blind
+    // store, because CTRL1 also carries the address-autoincrement and endian
+    // bits that begin() set (CTRL1_CONFIG, above) and that the part needs if
+    // it is ever woken. REG_CTRL1 is the same 0x02 begin() writes.
+    uint8_t ctrl1 = 0;
+    if (!readRegs(REG_CTRL1, &ctrl1, 1)) return false;
+    return writeReg(REG_CTRL1, static_cast<uint8_t>(ctrl1 | 0x01));
+}
+
 bool Qmi8658::readRaw(h0::Vec3& out) {
     if (addr_ == 0) return false;
     uint8_t b[6];
