@@ -153,9 +153,12 @@ TEST_CASE("acceleration can be switched off for short ladders") {
 
     // 200 px of travel in 10 samples: fast enough that the default curve would
     // multiply it several-fold.
+    //
+    // 200 px is five pitches plus 30, and 30 px is past the half-pitch where
+    // the sixth row becomes the one drawn large -- so six is what the wheel is
+    // showing, and six is what it must commit. Truncating to five was the bug.
     const int flick = drag(plain, 240, 40, 10);
-    const int expected = 200 / PPU; // exactly the unaccelerated distance
-    CHECK(flick == expected);
+    CHECK(flick == 6);
 }
 
 TEST_CASE("the gain cap defaults to 1x, and acceleration is opt-in") {
@@ -169,4 +172,66 @@ TEST_CASE("the gain cap defaults to 1x, and acceleration is opt-in") {
 
     c.setGainMax(DragColumn::kGainMax);
     CHECK(c.gainMax() == DragColumn::kGainMax);
+}
+
+TEST_CASE("the wheel commits the row it is displaying") {
+    // The bug this fixes: the renderer decides which row looks selected at
+    // half a pitch (setting_face.cpp:67) while the column used to commit at a
+    // full pitch, so 42.5% of frames displayed a row that had not been
+    // committed -- and releasing there snapped back by one.
+    //
+    // The renderer's rule, copied verbatim so a future edit to either side is
+    // caught here rather than on the glass.
+    auto renderedRow = [](int16_t offset) {
+        for (int k = -2; k <= 2; ++k) {
+            const int y = 156 + k * PPU + offset;
+            if (y > 156 - PPU / 2 && y <= 156 + PPU / 2) return k;
+        }
+        return 99;
+    };
+
+    for (int dir = -1; dir <= 1; dir += 2) {
+        DragColumn c;
+        int16_t y = 200;
+        c.update(true, y);
+        int committed = 0;
+        for (int i = 0; i < 120; ++i) {
+            y = static_cast<int16_t>(y + dir);
+            committed += c.update(true, y);
+            // The row drawn large shows value+k. It must be the one committed.
+            CHECK(renderedRow(c.offsetPx()) == 0);
+        }
+        CHECK(committed != 0); // the drag went somewhere
+    }
+}
+
+TEST_CASE("a still finger never moves the wheel, from any resting offset") {
+    // The guard that catches an oscillating detent rule. The existing
+    // "one-pixel jitter" test cannot: it only ever rests at offset 0, the
+    // single safest seat in the range, seventeen pixels from either boundary.
+    // A symmetric round-to-nearest passes that test and still emits a step
+    // every frame at rest -- measured, 300 changes over 300 idle polls.
+    for (int travel = 0; travel <= PPU; ++travel) {
+        for (int dir = -1; dir <= 1; dir += 2) {
+            DragColumn c;
+            int16_t y = 200;
+            c.update(true, y);
+            for (int i = 0; i < travel; ++i) {
+                y = static_cast<int16_t>(y + dir);
+                c.update(true, y);
+            }
+            // Finger down, perfectly still, for ten seconds at 30 Hz.
+            //
+            // Count emissions, do not SUM them. An oscillating rule alternates
+            // +1/-1, so a signed sum cancels to zero over an even number of
+            // polls and the test passes with the very bug it exists to catch --
+            // measured, the rejected symmetric-rounding form scored 70/70 here
+            // before this was changed to a count.
+            int emissions = 0;
+            for (int i = 0; i < 300; ++i) {
+                if (c.update(true, y) != 0) ++emissions;
+            }
+            CHECK(emissions == 0);
+        }
+    }
 }

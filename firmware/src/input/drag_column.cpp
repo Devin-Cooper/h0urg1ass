@@ -2,6 +2,19 @@
 
 namespace h0 {
 
+namespace {
+
+/// Floor division.
+///
+/// C++ integer division truncates toward zero, which is symmetric about the
+/// origin -- and that symmetry is exactly what makes a round-to-nearest detent
+/// oscillate: it leaves the residual sitting on the OPPOSITE commit boundary,
+/// which is itself a commit point, so a perfectly still finger flips the value
+/// every frame. Flooring lands the residual inside the band instead.
+int floorDiv(int a, int b) { return a >= 0 ? a / b : -(((-a) + b - 1) / b); }
+
+} // namespace
+
 void DragColumn::reset() {
     tracking_ = false;
     residual_ = 0;
@@ -36,10 +49,18 @@ int DragColumn::update(bool pressed, int16_t y) {
     if (gain4 > gainMax_) gain4 = gainMax_;
     residual_ = static_cast<int16_t>(residual_ + (dy * gain4) / kGainBase);
 
-    // Truncation toward zero, with the remainder carried. Without carrying, a
-    // slow drag loses a fraction of a unit on every sample and travels visibly
-    // less than a fast drag over the same distance.
-    const int steps = residual_ / kPixelsPerUnit;
+    // Commit where the RENDERER says the wheel has moved, not half a pitch
+    // later. The faces draw a row as selected once it is within PITCH/2 of the
+    // window centre; committing at a full pitch meant 42.5% of frames showed a
+    // row that had not been committed, and releasing there snapped back by one.
+    //
+    // The offset is PITCH/2 - 1, not PITCH/2, because the renderer's window is
+    // half-open -- (CY-17, CY+17] -- so at offset -17 the centre row already
+    // loses and its neighbour is drawn large. The rule adopts that asymmetry
+    // rather than fighting it, which is what lets all three faces stay
+    // untouched. The resulting band is [-16, +17]: exactly one pitch wide, and
+    // no reachable residual is itself a commit point.
+    const int steps = floorDiv(residual_ + kPixelsPerUnit / 2 - 1, kPixelsPerUnit);
     residual_ = static_cast<int16_t>(residual_ - steps * kPixelsPerUnit);
 
     // Screen y grows downward, so dragging up is negative dy -- and dragging up
