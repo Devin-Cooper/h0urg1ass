@@ -250,13 +250,31 @@ TEST_CASE("the readout panel is opaque: sand behind it changes nothing inside it
     charged.restart(t, 1u);
     h0::TimerFace bare;              // vessel never begun: no sand, no walls
 
-    // LOAD-BEARING. Without it this passes on an empty region and rebuilds
-    // exactly the vacuous guarantee it replaces.
-    const int behind = cellsInRect(charged.sand(),
-                                   h0::sandgeom::PANEL_CX0, h0::sandgeom::PANEL_CY0,
-                                   h0::sandgeom::PANEL_CX1, h0::sandgeom::PANEL_CY1);
-    CAPTURE(behind);
-    REQUIRE(behind > 100);
+    // LOAD-BEARING, and it has to be measured over the region that used to be
+    // WALL -- not over the panel rect, which is mostly ordinary chamber and
+    // always was.
+    //
+    // The panel is grid x 6..97, y 1..46. The lintel was only x 23..81, y 1..26,
+    // so the panel rect contains a large slab that sand could always occupy.
+    // Measured on this fixture: 1745 occupied cells in the panel rect, of which
+    // just 531 lie in the ex-lintel rect. A `panel > 100` guard was therefore
+    // satisfied BEFORE the wall came out, and would stay satisfied if the wall
+    // were put back -- it rules out nothing. The ex-lintel count is the one that
+    // was exactly zero by construction until this change, so that is the one
+    // that has to carry the guard.
+    //
+    // Both counts are seed-independent at frame 0: reset() places grains by
+    // geometry and the seed only perturbs the tick. Verified 531 across seeds
+    // 1, 5, 11, 1234 and 0xC0FFEE.
+    const int behindPanel = cellsInRect(charged.sand(),
+                                        h0::sandgeom::PANEL_CX0, h0::sandgeom::PANEL_CY0,
+                                        h0::sandgeom::PANEL_CX1, h0::sandgeom::PANEL_CY1);
+    const int behindReadout = cellsInRect(charged.sand(),
+                                          h0::sandgeom::LINTEL_CX0, h0::sandgeom::LINTEL_CY0,
+                                          h0::sandgeom::LINTEL_CX1, h0::sandgeom::LINTEL_CY1);
+    CAPTURE(behindPanel);
+    CAPTURE(behindReadout);
+    REQUIRE(behindReadout > 300);
 
     Panel a, b;
     charged.render(a, t, 0);
@@ -279,6 +297,15 @@ TEST_CASE("the panel stays opaque through every flap phase and when expired") {
         h0::TimerFace bare;
         if (expired) t.tick(301 * SEC);
 
+        // Same guard as above, for the same reason: the face is never ticked
+        // here, so the sand stays at its charged frame-0 layout and there really
+        // is sand in the region that used to be solid wall.
+        const int behindReadout = cellsInRect(charged.sand(),
+                                              h0::sandgeom::LINTEL_CX0, h0::sandgeom::LINTEL_CY0,
+                                              h0::sandgeom::LINTEL_CX1, h0::sandgeom::LINTEL_CY1);
+        CAPTURE(behindReadout);
+        REQUIRE(behindReadout > 300);
+
         for (int i = 1; i <= 60; ++i) {
             const uint64_t now = static_cast<uint64_t>(i) * 16'666ull;
             Panel a, b;
@@ -287,6 +314,122 @@ TEST_CASE("the panel stays opaque through every flap phase and when expired") {
             CAPTURE(expired); CAPTURE(i);
             REQUIRE(diff(a, b, h0::sandgeom::PANEL_X, h0::sandgeom::PANEL_Y,
                          h0::sandgeom::PANEL_W, h0::sandgeom::PANEL_H, true) == 0);
+        }
+    }
+}
+
+TEST_CASE("the panel is dark ink on white paper, in every state, with a border") {
+    // ABSOLUTE, and that is the entire point of it.
+    //
+    // The two tests above compare a charged face against a bare one, so any
+    // transform applied to BOTH faces cancels in the diff and they cannot see
+    // it. Moving `invertSafeBox` from before the panel draw to after it does
+    // exactly that: the whole readout comes out black with a white border, the
+    // separator's colon and the "DONE" label are drawn black-on-black and
+    // vanish -- and both opacity tests stay green, because `bare` was inverted
+    // too. Measured: before this test existed that mutation left the whole suite
+    // byte-identical -- 185 cases / 179 passed, 94180 assertions / 12 failed,
+    // the same six names -- while the render really had changed.
+    //
+    // Nothing relative can catch it. So this test does not compare two renders
+    // at all; it asserts what the panel IS.
+    //
+    // It also pins the border, which nothing else does. The border is required
+    // -- `renderSand` no longer draws the housing, so without it the readout has
+    // no edge at all -- but three tests that still describe the old, narrower
+    // lintel geometry fail *because* of it, and deleting it takes the suite from
+    // six failures to three. Making the tree greener by deleting a required
+    // feature is a trap, and this is the tripwire on it. Those three are
+    // retargeted at PANEL_* when the readout is enlarged; the border stays.
+    onebit::init();
+    for (int st = 0; st < 4; ++st) {
+        h0::TimerModel t;
+        t.setDuration(300 * SEC); // > 180 s -> the 2000-grain tier
+        h0::TimerFace face;
+        face.restart(t, 1u);
+        uint64_t base = 0;
+        std::string what = "idle";
+        switch (st) {
+            case 0: break;                                   // Idle
+            case 1: t.start(0); what = "running"; break;     // Running
+            case 2: t.start(0); t.pause(0); what = "paused"; break;
+            default:                                          // Expired
+                t.start(0);
+                t.tick(301 * SEC);
+                base = 301 * SEC;
+                what = "expired";
+                REQUIRE(t.isExpired());
+                break;
+        }
+        CAPTURE(what);
+
+        // The face is never ticked, so the sand stays at its charged layout and
+        // there is genuinely sand behind the readout in all four states. Without
+        // this the assertions below are about a panel floating over nothing.
+        const int behindReadout = cellsInRect(face.sand(),
+                                              h0::sandgeom::LINTEL_CX0, h0::sandgeom::LINTEL_CY0,
+                                              h0::sandgeom::LINTEL_CX1, h0::sandgeom::LINTEL_CY1);
+        CAPTURE(behindReadout);
+        REQUIRE(behindReadout > 300);
+
+        // A few frames apart, so a mid-flap phase is covered as well as a
+        // settled one -- the widget writes WHITE to occlude a falling card, and
+        // that write lands inside the panel.
+        for (int i = 0; i < 4; ++i) {
+            const uint64_t now = base + static_cast<uint64_t>(i) * 8u * 16'666ull;
+            CAPTURE(i);
+            Panel fb;
+            face.render(fb, t, now);
+
+            constexpr int16_t PX = h0::sandgeom::PANEL_X, PY = h0::sandgeom::PANEL_Y;
+            constexpr int16_t PW = h0::sandgeom::PANEL_W, PH = h0::sandgeom::PANEL_H;
+
+            // 1. The border exists, all the way round. Deleting `drawRect`
+            //    makes this zero; inverting after the panel draw does too.
+            int borderInk = 0;
+            for (int16_t x = PX; x < PX + PW; ++x) {
+                if (fb.getPixel(x, PY) == BLACK) ++borderInk;
+                if (fb.getPixel(x, static_cast<int16_t>(PY + PH - 1)) == BLACK) ++borderInk;
+            }
+            for (int16_t y = PY; y < PY + PH; ++y) {
+                if (fb.getPixel(PX, y) == BLACK) ++borderInk;
+                if (fb.getPixel(static_cast<int16_t>(PX + PW - 1), y) == BLACK) ++borderInk;
+            }
+            const int borderPx = 2 * PW + 2 * PH;
+            CAPTURE(borderInk);
+            CHECK(borderInk == borderPx);
+
+            // 2. The ring immediately inside the border is paper. This is the
+            //    weakest possible statement of "the panel is white", so it
+            //    survives the board growing to fill the panel, and it is still
+            //    enough to catch a panel that came out black.
+            int ringPaper = 0;
+            for (int16_t x = static_cast<int16_t>(PX + 1); x < PX + PW - 1; ++x) {
+                if (fb.getPixel(x, static_cast<int16_t>(PY + 1)) == WHITE) ++ringPaper;
+                if (fb.getPixel(x, static_cast<int16_t>(PY + PH - 2)) == WHITE) ++ringPaper;
+            }
+            for (int16_t y = static_cast<int16_t>(PY + 1); y < PY + PH - 1; ++y) {
+                if (fb.getPixel(static_cast<int16_t>(PX + 1), y) == WHITE) ++ringPaper;
+                if (fb.getPixel(static_cast<int16_t>(PX + PW - 2), y) == WHITE) ++ringPaper;
+            }
+            const int ringPx = 2 * (PW - 2) + 2 * (PH - 2);
+            CAPTURE(ringPaper);
+            CHECK(ringPaper == ringPx);
+
+            // 3. The interior is a readout, not a slab: some ink, nowhere near
+            //    all of it. Measured on this fixture the panel interior carries
+            //    1,038-1,147 ink px of 16,200 (~7%); with the invert moved after
+            //    the panel it carries all 16,200. Both bounds are far from the
+            //    real figure, so this moves for defects, not for glyph choices.
+            const int interior = inkInRect(fb, static_cast<int16_t>(PX + 1),
+                                           static_cast<int16_t>(PY + 1),
+                                           static_cast<int16_t>(PW - 2),
+                                           static_cast<int16_t>(PH - 2));
+            const int area = (PW - 2) * (PH - 2);
+            CAPTURE(interior);
+            CAPTURE(area);
+            CHECK(interior > 200);        // the readout drew something
+            CHECK(interior < area / 4);   // and it is ink on paper, not paper on ink
         }
     }
 }
