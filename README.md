@@ -25,6 +25,12 @@ Stand it up to start. Lay it flat to pause, and to dial a new duration. Turn it 
 to full and run again — the gesture a real hourglass already has. Set it face down to silence
 a ringing alarm.
 
+Lay it flat and swipe sideways for a settings screen — theme, brightness, the dim-then-blank
+ladder, alarm and blank timeouts, sound and a read-only battery reading, plus calibration and
+a defaults reset. Edits preview live; a second swipe commits them to flash, and lifting the
+device back up cancels and restores instead of starting the timer. Settings survive a power
+cut.
+
 There is one screen: a split-flap `MM:SS` readout housed in a lintel, over a falling-sand
 simulation. The board carries the number; the sand carries the feeling of the time passing.
 
@@ -41,9 +47,11 @@ convention is untouched: `BLACK` still means ink everywhere in the code.
 display driven end to end at 62.5 MHz — 19.1 ms for a full 240×280 frame — touch at `0x15`,
 IMU at `0x6B`, RTC at `0x51`, corner radius measured at ≈44 px.
 
-Everything that does not need a board is tested on the host: 91 cases over the timer model,
-the orientation classifier, the app state machine, the drag columns and the sand, with the
-faces pinned to braille goldens.
+Everything that does not need a board is tested on the host: 162 cases over the timer model,
+the orientation classifier, the app state machine, the drag columns and the sand, and the
+settings model, codec, flash store and screen, with the faces pinned to braille goldens. The
+settings screen builds for the target — `firmware/flash.sh --build-only` succeeds — but has
+not run on a board.
 
 Known gaps: one sand tick costs ~4.5 ms, about 13% of the CPU at the 30 Hz the simulation
 runs at, and the word-parallel fall step the bit-packed grid was laid out for is not written.
