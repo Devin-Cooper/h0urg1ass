@@ -236,6 +236,61 @@ TEST_CASE("test helpers: complementIn, cellsInRect and cellDiff mean what they s
 
 // ------------------------------------------------- the legibility mechanism --
 
+TEST_CASE("the readout panel is opaque: sand behind it changes nothing inside it") {
+    // The invariant that replaces "sand cannot enter the lintel". It is no
+    // longer physically impossible for sand to be behind the readout -- it is
+    // expected -- so the guarantee moves to compositing: whatever is behind,
+    // the panel's pixels are the same as they would be with no sand at all.
+    onebit::init();
+    h0::TimerModel t;
+    t.setDuration(300 * SEC);        // > 180 s -> the 2000-grain tier
+    t.start(0);
+
+    h0::TimerFace charged;
+    charged.restart(t, 1u);
+    h0::TimerFace bare;              // vessel never begun: no sand, no walls
+
+    // LOAD-BEARING. Without it this passes on an empty region and rebuilds
+    // exactly the vacuous guarantee it replaces.
+    const int behind = cellsInRect(charged.sand(),
+                                   h0::sandgeom::PANEL_CX0, h0::sandgeom::PANEL_CY0,
+                                   h0::sandgeom::PANEL_CX1, h0::sandgeom::PANEL_CY1);
+    CAPTURE(behind);
+    REQUIRE(behind > 100);
+
+    Panel a, b;
+    charged.render(a, t, 0);
+    bare.render(b, t, 0);
+    CHECK(diff(a, b, h0::sandgeom::PANEL_X, h0::sandgeom::PANEL_Y,
+               h0::sandgeom::PANEL_W, h0::sandgeom::PANEL_H, true) == 0);
+}
+
+TEST_CASE("the panel stays opaque through every flap phase and when expired") {
+    // One frame proves nothing about the two moments the panel is most likely
+    // to leak: mid-flap, when the widget writes WHITE to occlude a falling
+    // card, and Expired, when invertSafeBox blackens everything under it.
+    onebit::init();
+    for (int expired = 0; expired < 2; ++expired) {
+        h0::TimerModel t;
+        t.setDuration(300 * SEC);
+        t.start(0);
+        h0::TimerFace charged;
+        charged.restart(t, 5u);
+        h0::TimerFace bare;
+        if (expired) t.tick(301 * SEC);
+
+        for (int i = 1; i <= 60; ++i) {
+            const uint64_t now = static_cast<uint64_t>(i) * 16'666ull;
+            Panel a, b;
+            charged.render(a, t, now);
+            bare.render(b, t, now);
+            CAPTURE(expired); CAPTURE(i);
+            REQUIRE(diff(a, b, h0::sandgeom::PANEL_X, h0::sandgeom::PANEL_Y,
+                         h0::sandgeom::PANEL_W, h0::sandgeom::PANEL_H, true) == 0);
+        }
+    }
+}
+
 TEST_CASE("the lintel interior is empty in the wall grid, so sand cannot enter it") {
     // This is the whole design. Not a statistic about where grains happen to
     // land -- the interior is simply not a place a grain can be, because the
@@ -1174,3 +1229,5 @@ TEST_CASE("power face: the release prompt") {
     h0::PowerFace::renderAt(fb, h0::PowerAction::PromptRelease, 255);
     checkGolden(fb, "power@release");
 }
+
+

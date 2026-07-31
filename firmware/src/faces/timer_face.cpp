@@ -268,13 +268,16 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
 
     if (t.state() == TimerModel::State::Expired) invertSafeBox(fb);
 
-    // Knock the housing out white. renderSand already leaves it white -- the
-    // interior is in neither the sand nor the ink grid -- so this is redundant
-    // in every state but Expired, where the invert above blackens it. Keeping it
-    // unconditional is what makes "the card is always white" a flat invariant
-    // rather than one with a case analysis.
-    onebit::fillRect(fb, sandgeom::LINTEL_IN_X, sandgeom::LINTEL_IN_Y,
-                     sandgeom::LINTEL_IN_W, sandgeom::LINTEL_IN_H, WHITE);
+    // The panel is opaque, and that is now the WHOLE legibility guarantee.
+    // The lintel used to be a wall: sand could not be behind the readout, and
+    // renderSand -- which ASSIGNS bytes -- repainted the interior white for
+    // free. Sand fills this region now, so every pixel of the panel is this
+    // function's responsibility, and it must land after renderSand and after
+    // the Expired invert or it is annihilated by them.
+    onebit::fillRect(fb, sandgeom::PANEL_X, sandgeom::PANEL_Y,
+                     sandgeom::PANEL_W, sandgeom::PANEL_H, WHITE);
+    onebit::drawRect(fb, sandgeom::PANEL_X, sandgeom::PANEL_Y,
+                     sandgeom::PANEL_W, sandgeom::PANEL_H, BLACK);
 
     // No fb.clear() here. The widget writes ink, plus -- since the falling-card
     // rework -- a WHITE clear behind each card so it can occlude what it passes

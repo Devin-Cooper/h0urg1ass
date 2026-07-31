@@ -32,20 +32,19 @@ static_assert(ORIGIN_X % 8 == 0, "row expansion assumes a byte-aligned origin");
 inline constexpr int FLOOR_ROW = SandGrid::H / 2;
 inline constexpr int HOLE_CX = SandGrid::W / 2;
 
-/// The lintel: the housing the readout sits in, hung from the vessel ceiling.
+/// The lintel: what the readout's housing USED TO BE. Retained only because a
+/// few call sites still name it; PANEL_* below is the live geometry.
 ///
-/// It is a wall, not a decoration. Being part of the wall grid is what makes
-/// the readout legible at one bit: sand cannot enter a wall, so the interior
-/// is guaranteed empty, and `renderSand` -- which *assigns* bytes rather than
-/// or-ing them -- repaints it white every frame for free. Black glyphs on black
-/// sand stops being a drawing problem and becomes physically impossible.
+/// It was a wall, and that was the whole legibility mechanism: sand cannot
+/// enter a wall, so the interior was guaranteed empty, and `renderSand` --
+/// which *assigns* bytes rather than or-ing them -- repainted it white every
+/// frame for free. Black glyphs on black sand was not a drawing problem, it was
+/// physically impossible.
 ///
-/// **It hangs off the ceiling with no cell above it, and that is load-bearing.**
-/// The centreline attractor marches resting grains toward HOLE_CX. Any obstacle
-/// with free space above it that spans that column collects a tower of grains
-/// that can never leave -- destroying the one property the upper chamber has to
-/// have, which is that it empties. With the top row welded to the border, that
-/// failure mode does not exist.
+/// It is no longer in the wall grid. Sand fills this region now (capacity
+/// 2188 -> 3722 grains), and legibility is bought with draw order instead: the
+/// readout is an opaque panel composited AFTER the sand. That is a weaker
+/// guarantee, and the opacity tests are what hold it up.
 inline constexpr int LINTEL_CX0 = 23;
 inline constexpr int LINTEL_CX1 = 81;
 inline constexpr int LINTEL_CY0 = 1; ///< row 0 is the border itself
@@ -56,17 +55,20 @@ inline constexpr int16_t LINTEL_W = SCALE * (LINTEL_CX1 - LINTEL_CX0 + 1); // 11
 inline constexpr int16_t LINTEL_Y = ORIGIN_Y + SCALE * LINTEL_CY0;         // 18
 inline constexpr int16_t LINTEL_H = SCALE * (LINTEL_CY1 - LINTEL_CY0 + 1); // 52
 
-/// The interior: never drawn, never enterable, and exactly the readout's home.
+/// The interior: what the readout used to be confined to.
 inline constexpr int16_t LINTEL_IN_X = LINTEL_X + SCALE;      // 64
 inline constexpr int16_t LINTEL_IN_W = LINTEL_W - 2 * SCALE;  // 114
 inline constexpr int16_t LINTEL_IN_Y = LINTEL_Y;              // 18 -- no top rail
 inline constexpr int16_t LINTEL_IN_H = LINTEL_H - SCALE;      // 50
 
-static_assert(LINTEL_CY0 == 1, "the lintel must hang off the ceiling, or it strands sand");
+// The "must hang off the ceiling or it strands sand" assert is gone with the
+// wall it guarded: the tower-of-grains failure needs an obstacle to stack on,
+// and there is no obstacle. So is the corner-clearance assert -- it was a
+// y-independent sufficient rule lifted from layout.hpp, not a bound, and it is
+// redundant with the safe-box check below (28^2 + 28^2 = 1568 <= 44^2, so the
+// whole safe box lies inside the rounded rect at every row).
 static_assert(LINTEL_X >= safe::X && LINTEL_X + LINTEL_W <= safe::X + safe::W,
               "lintel must lie inside the safe box");
-static_assert(LINTEL_X >= safe::CORNER_R && LINTEL_X + LINTEL_W <= 240 - safe::CORNER_R,
-              "lintel must clear both corner quadrants at every y");
 
 /// The readout panel. A PIXEL rect, not a grid rect: since it is composited
 /// over the sand rather than carved out of the physics, it is free of the
@@ -99,11 +101,11 @@ static_assert(PANEL_CY0 >= 0 && PANEL_CY1 < SandGrid::H, "panel grid rect must b
 /// Build the vessel: border, floor, and a hole of the given half-width.
 SandGrid makeVessel(int holeHalfWidth);
 
-/// Fill the lintel solid. This is the PHYSICS shape -- what sand cannot enter.
-void fillLintelSolid(SandGrid& w);
-
-/// Draw the lintel's jambs and soffit only. This is the INK shape -- what the
-/// eye sees. The interior is deliberately absent so it renders white.
+/// Draw the lintel's jambs and soffit into a grid.
+///
+/// No longer used by the vessel: the housing is drawn by the face as an opaque
+/// panel over the sand, not baked into the ink grid. Kept because the tests
+/// still build reference frames with it.
 void drawLintelOutline(SandGrid& w);
 
 /// Draw sand and vessel into `fb`.

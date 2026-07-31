@@ -80,17 +80,20 @@ public:
 
     const SandGrid& sand() const { return sim_.sand(); }
 
-    /// What to DRAW -- which is not what the sand collides with.
+    /// The vessel: border and floor. Both what the sand collides with and what
+    /// gets drawn -- those two used to differ and no longer do.
     ///
-    /// The two roles split at the lintel: it is solid to the physics so no grain
-    /// can ever be inside the readout, but only its jambs and soffit are inked,
-    /// so `renderSand` leaves the interior white. Returning `open_` here instead
-    /// would paint the housing solid black, which is precisely the black-on-black
-    /// failure the lintel exists to prevent.
+    /// The lintel was the split. It was solid to the physics so no grain could
+    /// be inside the readout, and inked only as jambs and soffit so `renderSand`
+    /// left the interior white; legibility fell out of the wall for free. The
+    /// readout is now an opaque panel composited AFTER the sand, so the region
+    /// is ordinary chamber, one grid describes it, and legibility is the face's
+    /// job rather than the simulation's.
     ///
-    /// The gate is not reflected either: the shut shape is a physics detail, and
-    /// drawing it would make the hole blink shut several times a second.
-    const SandGrid& walls() const { return drawn_; }
+    /// The gate is still not reflected: the shut shape is a physics detail held
+    /// in the sim's own copy, and drawing it would make the hole blink shut
+    /// several times a second.
+    const SandGrid& walls() const { return walls_; }
 
     int charge() const { return charge_; }
     int lowerCount() const;
@@ -105,8 +108,7 @@ private:
     uint32_t next();
 
     SandSim sim_;
-    SandGrid open_;  ///< physics, aperture clear
-    SandGrid drawn_; ///< ink
+    SandGrid walls_; ///< physics and ink alike, aperture clear
 
     /// Cells something has already moved into LATERALLY this tick.
     ///

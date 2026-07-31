@@ -20,17 +20,14 @@ uint32_t SandVessel::next() {
 }
 
 void SandVessel::begin() {
-    const SandGrid base = makeVessel(kHoleHalf);
+    // One grid, for both roles. The lintel used to make these two differ: it
+    // was solid to the physics and drawn only as an outline, so sand could not
+    // enter the readout and the interior still rendered white. The readout is
+    // an opaque composited panel now, so the vessel has no such region and
+    // there is nothing left for a second grid to say -- see walls().
+    walls_ = makeVessel(kHoleHalf);
 
-    // Physics gets the lintel SOLID; ink gets only its outline. Splitting the
-    // two roles here is the whole legibility mechanism -- see walls().
-    open_ = base;
-    fillLintelSolid(open_);
-
-    drawn_ = base;
-    drawLintelOutline(drawn_);
-
-    sim_.setWalls(open_);
+    sim_.setWalls(walls_);
     sim_.setMaxFallSpeed(kMaxFallSpeed);
 
     // Staggered, NOT all zero. Every cell of the aperture is handed the same
@@ -61,13 +58,13 @@ void SandVessel::reset(uint32_t seed, int grains) {
             for (int s = (d == 0 ? 0 : -1); s <= 0; ++s) {
                 const int x = (d == 0) ? HOLE_X : (s < 0 ? HOLE_X - d : HOLE_X + d);
                 if (x < 1 || x > SandGrid::W - 2) continue;
-                if (open_.get(x, y) || sim_.sand().get(x, y)) continue;
+                if (walls_.get(x, y) || sim_.sand().get(x, y)) continue;
                 sim_.sand().set(x, y, true);
                 ++placed;
             }
             if (d > 0 && placed < grains) {
                 const int x = HOLE_X + d;
-                if (x <= SandGrid::W - 2 && !open_.get(x, y) && !sim_.sand().get(x, y)) {
+                if (x <= SandGrid::W - 2 && !walls_.get(x, y) && !sim_.sand().get(x, y)) {
                     sim_.sand().set(x, y, true);
                     ++placed;
                 }
@@ -78,7 +75,7 @@ void SandVessel::reset(uint32_t seed, int grains) {
 }
 
 bool SandVessel::solid(int x, int y) const {
-    return open_.get(x, y) || sim_.sand().get(x, y);
+    return walls_.get(x, y) || sim_.sand().get(x, y);
 }
 
 bool SandVessel::resting(int x, int y) const {
