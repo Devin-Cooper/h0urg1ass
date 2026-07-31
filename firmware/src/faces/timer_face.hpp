@@ -57,6 +57,11 @@ public:
     /// 25 grains/s against the 6.7 the longest tier needs.
     void setTickHz(uint16_t hz);
 
+    /// A muted buzzer is otherwise discoverable only by the absence of a
+    /// sound, which is indistinguishable from a gesture the device did not
+    /// see. Drawing a small glyph is what makes the state visible instead.
+    void setMuted(bool m) { muted_ = m; }
+
     /// Recharge and restart the drain.
     void restart(const TimerModel& t, uint32_t seed);
 
@@ -109,6 +114,7 @@ private:
     onebit::SplitFlapDisplay secs_;
 
     bool started_ = false;
+    bool muted_ = false;
     uint32_t lastGen_ = 0;
     uint64_t lastTickUs_ = 0;
     uint64_t tickPeriodUs_ = kTickPeriodUs;

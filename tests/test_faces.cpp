@@ -836,3 +836,30 @@ TEST_CASE("every settings row's value fits its column and clears the clip") {
     }
     }
 }
+
+TEST_CASE("the mute glyph appears only when muted, and changes nothing else") {
+    // MUTE silences the only acknowledgement channel an invisible gesture
+    // vocabulary has. The glyph is what stops that state being discoverable
+    // solely by the absence of a sound.
+    Panel plain, muted;
+    h0::TimerFace f1, f2;
+    h0::TimerModel t;
+    t.setDuration(120 * SEC);
+
+    f1.setMuted(false);
+    f1.render(plain, t, 0);
+    f2.setMuted(true);
+    f2.render(muted, t, 0);
+
+    const int extra = inkCount(muted) - inkCount(plain);
+    CHECK(extra > 0);   // it is drawn
+    CHECK(extra < 120); // and it is small -- this is a marker, not a banner
+
+    // And it is where it claims to be: nothing outside x 18..26 / y 18..26 moved.
+    for (int16_t y = 0; y < 280; ++y) {
+        for (int16_t x = 0; x < 240; ++x) {
+            if (x >= 18 && x <= 26 && y >= 18 && y <= 26) continue;
+            CHECK(plain.getPixel(x, y) == muted.getPixel(x, y));
+        }
+    }
+}

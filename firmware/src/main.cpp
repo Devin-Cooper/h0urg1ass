@@ -391,7 +391,7 @@ int main() {
         // keeps showing the old theme until something else happens to dirty it.
         tracker.markAllDirty();
         app.setAlarmTimeout(static_cast<uint64_t>(s.alarmS) * 1'000'000ull);
-        // face.setMuted(s.mute != 0); -- added in Task 14; omit until then
+        face.setMuted(s.mute != 0);
     };
 
     // The picker's columns track independently of the settings menu, so

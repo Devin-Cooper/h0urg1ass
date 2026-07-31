@@ -237,6 +237,31 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
         onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
                                static_cast<int16_t>(120 - w / 2), kLabelY, label, BLACK);
     }
+
+    // A muted buzzer is otherwise discoverable only by the absence of a sound,
+    // which is indistinguishable from a gesture the device did not see.
+    //
+    // Top-left of the safe box. At y = 18 the corner disc's visible x begins at
+    // 44 - sqrt(44^2 - 26^2) ~= 8.5, so x = 18 clears with ~10 px to spare.
+    //
+    // Drawn last, deliberately: renderSand ASSIGNS raw bytes across the whole
+    // safe box (see the note above), so anything drawn before it is
+    // annihilated silently. This must stay the final thing render() does.
+    if (muted_) {
+        constexpr int16_t GX = h0::safe::X + 2; // 18
+        constexpr int16_t GY = h0::safe::Y + 2; // 18
+        // The cone: a 4 px body with a 3 px flare, 9 px tall overall.
+        onebit::fillRect(fb, GX, static_cast<int16_t>(GY + 3), 3, 3, BLACK);
+        for (int16_t i = 0; i < 4; ++i) {
+            onebit::drawLine(fb, static_cast<int16_t>(GX + 3 + i),
+                             static_cast<int16_t>(GY + 3 - i),
+                             static_cast<int16_t>(GX + 3 + i),
+                             static_cast<int16_t>(GY + 5 + i), BLACK);
+        }
+        // The bar through it, which is what says "off" rather than "sound".
+        onebit::drawLine(fb, GX, GY, static_cast<int16_t>(GX + 8),
+                         static_cast<int16_t>(GY + 8), BLACK);
+    }
 }
 
 } // namespace h0
