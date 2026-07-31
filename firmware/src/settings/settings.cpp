@@ -29,6 +29,7 @@ void clamp(Settings& s) {
     s.alarmS = clampTo<uint16_t>(s.alarmS, 15, 300);
     if (s.mute > 1) s.mute = 0;
     s.batCalPermille = clampTo<uint16_t>(s.batCalPermille, kCalMin, kCalMax);
+    if (s.offAfterS > 3600) s.offAfterS = 300;
 }
 
 bool operator==(const Settings& a, const Settings& b) {
@@ -36,7 +37,7 @@ bool operator==(const Settings& a, const Settings& b) {
            a.backlightActive == b.backlightActive && a.backlightDim == b.backlightDim &&
            a.dimAfterS == b.dimAfterS && a.blankAfterS == b.blankAfterS &&
            a.alarmS == b.alarmS && a.mute == b.mute &&
-           a.batCalPermille == b.batCalPermille;
+           a.batCalPermille == b.batCalPermille && a.offAfterS == b.offAfterS;
 }
 
 } // namespace h0

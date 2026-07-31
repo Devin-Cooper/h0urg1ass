@@ -36,6 +36,7 @@ target_link_libraries(h0_settings PUBLIC onebit_host)
 add_library(h0_power STATIC
     ${FW_SRC}/power/battery_model.cpp
     ${FW_SRC}/power/backlight_policy.cpp
+    ${FW_SRC}/power/power_policy.cpp
 )
 target_include_directories(h0_power PUBLIC ${FW_SRC})
 target_link_libraries(h0_power PUBLIC h0_settings)
@@ -76,6 +77,7 @@ add_executable(h0urg1ass_tests
     test_settings_ui.cpp
     test_battery_model.cpp
     test_backlight_policy.cpp
+    test_power_policy.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE

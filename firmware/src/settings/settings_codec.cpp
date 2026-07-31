@@ -68,6 +68,7 @@ void encodeRecord(const Settings& s, uint32_t seq, uint8_t* out) {
     put16(p + 9, s.alarmS);
     p[11] = s.mute;
     put16(p + 12, s.batCalPermille);
+    put16(p + 14, s.offAfterS);
 
     // Last, so it covers everything written above.
     put16(out + 10, recordCrc(out));
@@ -95,6 +96,7 @@ bool decodeRecord(const uint8_t* rec, uint32_t& outSeq, Settings& out) {
     if (len >= 11) s.alarmS = get16(p + 9);
     if (len >= 12) s.mute = p[11];
     if (len >= 14) s.batCalPermille = get16(p + 12);
+    if (len >= 16) s.offAfterS = get16(p + 14);
 
     clamp(s);
     out = s;

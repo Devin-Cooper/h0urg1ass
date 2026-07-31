@@ -29,6 +29,7 @@ struct Settings {
     uint16_t alarmS = 60;
     uint8_t  mute = 0;
     uint16_t batCalPermille = 1000; ///< 1000 = never calibrated
+    uint16_t offAfterS = 300;       ///< 0 = never; idle auto-off, section 9's 5 minutes
 };
 
 inline constexpr Settings kDefaults{};

@@ -25,7 +25,7 @@ inline constexpr size_t kPayloadBytes = kRecordBytes - kHeaderBytes; // 244
 
 /// Bytes of `payload` a v1 Settings occupies. The rest is zero-filled and
 /// reserved -- issue #8's screenOffAfterS goes there, needing no migration.
-inline constexpr size_t kSettingsBytes = 14;
+inline constexpr size_t kSettingsBytes = 16;
 
 /// `seed` lets a CRC be continued across two disjoint regions, which is what
 /// `recordCrc` needs to skip over the stored CRC itself.
