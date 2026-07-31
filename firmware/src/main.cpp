@@ -36,6 +36,7 @@
 #include "app/app.hpp"
 #include "board/buzzer.hpp"
 #include "board/cst816.hpp"
+#include "board/flash_store.hpp"
 #include "board/pins.hpp"
 #include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
@@ -46,6 +47,8 @@
 #include "render/raster_ops.hpp"
 #include "sand/sand_render.hpp"
 #include "sand/sand_sim.hpp"
+#include "settings/settings_store.hpp"
+#include "settings/theme.hpp"
 #include "timer/timer_model.hpp"
 
 using onebit::BLACK;
@@ -361,6 +364,10 @@ int main() {
     if (touchOk) printf(" id 0x%02X", touch.chipId());
     printf("\nbattery %.2f V\n", static_cast<double>(readBatteryVolts()));
 
+    static board::FlashStore flashStore;
+    static h0::SettingsStore settingsStore(flashStore);
+    settingsStore.load();
+
     static board::St7789_1in69 lcd;
     if (!lcd.init()) {
         printf("FATAL: display init failed\n");
@@ -370,14 +377,22 @@ int main() {
 
     static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
     static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
-    // White figures on a black field. The framebuffer convention is unchanged --
-    // BLACK still means ink everywhere in the code -- this only decides which way
-    // round the glass shows it. It also suits the panel physically: an unlit
-    // pixel is the darkest thing this display can do, so a mostly-black frame is
-    // both the better-looking one and the cheaper one.
-    lcd.setInverted(true);
+    // Colour is decided in exactly one place: the theme's ink/paper pair, which
+    // the expander bakes into its lookup table. The panel keeps its own INVON
+    // requirement, untouched.
+    //
+    // These two were previously fighting. setInverted(true) sends INVOFF here --
+    // (geometry().invert != uiInverted_) with both true -- so the panel ran with
+    // its mandatory inversion OFF and every RGB565 value reached the glass
+    // COMPLEMENTED. That is invisible while the only colours are 0x0000 and
+    // 0xFFFF, and turns an amber ink into blue the moment a theme exists.
+    {
+        const h0::Theme& t = h0::themeFor(
+            static_cast<h0::ThemeId>(settingsStore.settings().themeId));
+        lcd.setColors(t.ink, t.paper);
+    }
     lcd.clear(WHITE);
-    lcd.setBacklight(kBacklightActive);
+    lcd.setBacklight(settingsStore.settings().backlightActive);
 
     static h0::TimerFace face;
 

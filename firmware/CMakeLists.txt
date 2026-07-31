@@ -60,6 +60,7 @@ add_executable(h0urg1ass
     src/settings/rows.cpp
     src/settings/settings_codec.cpp
     src/settings/settings_store.cpp
+    src/settings/theme.cpp
     ${ONEBIT_SOURCES}
 )
 

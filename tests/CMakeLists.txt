@@ -35,8 +35,10 @@ add_library(h0_settings STATIC
     ${FW_SRC}/settings/rows.cpp
     ${FW_SRC}/settings/settings_codec.cpp
     ${FW_SRC}/settings/settings_store.cpp
+    ${FW_SRC}/settings/theme.cpp
 )
 target_include_directories(h0_settings PUBLIC ${FW_SRC})
+target_link_libraries(h0_settings PUBLIC onebit_host)
 
 add_library(h0_faces STATIC
     ${FW_SRC}/faces/timer_face.cpp

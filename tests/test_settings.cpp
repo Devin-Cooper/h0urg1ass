@@ -1,9 +1,12 @@
 #include "doctest.h"
 
+#include <1bit/hal/pixel_format.hpp>
+
 #include <string>
 
 #include "settings/rows.hpp"
 #include "settings/settings.hpp"
+#include "settings/theme.hpp"
 
 using h0::RowId;
 using h0::Settings;
@@ -109,4 +112,31 @@ TEST_CASE("only CAL accelerates") {
 
 TEST_CASE("the battery row is read-only") {
     CHECK(h0::ladderSize(RowId::Battery) == 0);
+}
+
+TEST_CASE("every theme has distinct ink and paper") {
+    // An ink that equals its paper is an invisible screen, and there is no undo.
+    for (uint8_t i = 0; i < static_cast<uint8_t>(h0::ThemeId::Count); ++i) {
+        const h0::Theme& t = h0::themeFor(static_cast<h0::ThemeId>(i));
+        CHECK(t.ink != t.paper);
+        CHECK(t.name != nullptr);
+    }
+}
+
+TEST_CASE("the theme constants are what the arithmetic says") {
+    // Expected values are computed from the library's constexpr rgb565(),
+    // never duplicated as hex literals: this suite is the closest thing
+    // setColors() has to a consumer test, and a hex literal here would only
+    // enshrine whatever theme.cpp already emits rather than catch it being
+    // wrong. (This class of bug is real -- rgb565(255,176,0) is 0xFD80, and
+    // an earlier draft of this file wrote 0xFD20.)
+    using onebit::rgb565;
+    CHECK(h0::themeFor(h0::ThemeId::White).ink == rgb565(255, 255, 255));
+    CHECK(h0::themeFor(h0::ThemeId::White).paper == rgb565(0, 0, 0));
+    CHECK(h0::themeFor(h0::ThemeId::Paper).ink == rgb565(0, 0, 0));
+    CHECK(h0::themeFor(h0::ThemeId::Paper).paper == rgb565(255, 255, 255));
+    CHECK(h0::themeFor(h0::ThemeId::Amber).ink == rgb565(255, 176, 0));
+    CHECK(h0::themeFor(h0::ThemeId::Amber).paper == rgb565(0, 0, 0));
+    CHECK(h0::themeFor(h0::ThemeId::Night).ink == rgb565(255, 32, 0));
+    CHECK(h0::themeFor(h0::ThemeId::Night).paper == rgb565(0, 0, 0));
 }
