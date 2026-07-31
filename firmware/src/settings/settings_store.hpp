@@ -21,6 +21,21 @@ public:
     static constexpr int kRecordsPerSector =
         static_cast<int>(IFlashBackend::kSectorBytes / kRecordBytes); // 16
 
+    // IFlashBackend::programPage() takes no length parameter -- it
+    // unconditionally writes kPageBytes from src, and every call site passes
+    // a kRecordBytes buffer. The two constants live in separate headers and
+    // are equal today only by coincidence; if that ever stops being true,
+    // this becomes a silent out-of-bounds stack read that programs garbage
+    // into flash, with no compiler diagnostic.
+    static_assert(kRecordBytes == IFlashBackend::kPageBytes,
+                  "a record must be exactly one flash page");
+    static_assert(kSectorB - kSectorA == IFlashBackend::kSectorBytes,
+                  "the two sectors must be exactly one kSectorBytes apart");
+    static_assert(kSectorA % IFlashBackend::kSectorBytes == 0,
+                  "kSectorA must be sector-aligned");
+    static_assert(IFlashBackend::kSectorBytes % kRecordBytes == 0,
+                  "kRecordsPerSector's division must be exact");
+
     explicit SettingsStore(IFlashBackend& backend) : flash_(backend) {}
 
     /// Scan both sectors. Always leaves settings() valid -- defaults if nothing
