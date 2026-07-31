@@ -13,7 +13,7 @@ namespace h0 {
 ///     0      4    magic  'H','G','0','1'
 ///     4      4    seq    uint32 LE, monotonic, never reused
 ///     8      2    len    uint16 LE, payload bytes actually used
-///    10      2    crc16  CCITT over payload[0..len)
+///    10      2    crc16  CCITT over bytes 0..9 then 12..255 (whole record except this field)
 ///    12    244    payload
 ///
 /// Aligned to a page boundary deliberately: the W25Q allows programming at any
