@@ -1,4 +1,5 @@
 #include "doctest.h"
+#include <cstring>
 
 #include "golden.hpp"
 
@@ -405,7 +406,7 @@ TEST_CASE("one real second drives exactly one flap on the seconds-units cell, "
     constexpr uint64_t kFrame = 33'333ull;
     bool sawOld = false, changed = false;
     uint64_t changedAt = 0;
-    for (uint64_t now = kFrame; now <= 1'900'000ull; now += kFrame) {
+    for (uint64_t now = kFrame; now <= 1'600'000ull; now += kFrame) {
         face.render(fb, t, now);
         const char c = face.boardChar(4);
         CAPTURE(now);
@@ -426,16 +427,68 @@ TEST_CASE("one real second drives exactly one flap on the seconds-units cell, "
     CHECK(sawOld);
     CHECK(changed);
 
-    // However the flip-accumulator's phase happened to land, one flap is at
-    // most ms_per_flap of animation -- 500 ms -- so the cell is unconditionally
-    // settled well before the second is up. Confirm the RENDERED FRAME, not
-    // just the character, is pixel-static from there to the end of the
-    // window: that is "the board is static for the remainder", not merely
-    // "the glyph index stopped changing".
+    // The card lands one whole flap after the tick that released it -- the
+    // sequence is 500 ms falling, then 500 ms standing, which is the cadence
+    // that was asked for. The window is loose by a frame either side because
+    // the flap advances on an accumulator crossing, which lands wherever the
+    // render cadence divides it.
+    CHECK(changedAt >= 1'450'000ull);
+    CHECK(changedAt <= 1'600'000ull);
+
+    // One flap is at most ms_per_flap of animation, so the cell is settled
+    // before the second is up. Confirm the RENDERED FRAME, not just the
+    // character, is pixel-static across the rest of THIS second -- that is
+    // "the board holds", not merely "the glyph index stopped changing".
+    // Sampled short of the 2.0 s tick, which legitimately starts the next flap.
     Panel a, b;
-    face.render(a, t, changedAt + 500'000ull);
-    face.render(b, t, changedAt + 900'000ull);
+    face.render(a, t, 1'700'000ull);
+    face.render(b, t, 1'950'000ull);
     CHECK(diff(a, b, CARD_X, CARD_Y, CARD_W, CARD_H, true) == 0);
+}
+
+TEST_CASE("the flap stays in motion across consecutive frames, not just one") {
+    // The gap every other flap test left open. `boardChar` reports the cell's
+    // CURRENT index, which reaches its target on the frame the flip STARTS --
+    // so a board that completes its whole 500 ms flap inside one frame reads
+    // identically to one that animates properly: right glyph, right end state,
+    // matching goldens. Only the frames BETWEEN the ticks distinguish them, and
+    // nothing sampled them. On hardware that shows up as no animation at all.
+    //
+    // 500 ms per flap at ~30 Hz is about 15 frames of motion; require at least
+    // 10 consecutive, which is loose enough to survive cadence tuning and tight
+    // enough that a one-frame snap cannot pass.
+    h0::TimerModel t;
+    t.setDuration(15 * SEC);
+    t.start(0);
+    h0::TimerFace face;
+
+    Panel fb;
+    face.render(fb, t, 0); // first-ever render snaps rather than cascading
+    REQUIRE(face.boardChar(4) == '5');
+    REQUIRE_FALSE(face.boardFlipping()); // settled, so the count below starts clean
+
+    constexpr uint64_t kFrame = 33'333ull;
+    int flipFrames = 0, best = 0, movedFrames = 0;
+    Panel prev, cur;
+    face.render(prev, t, kFrame);
+    for (uint64_t now = 2 * kFrame; now <= 1'900'000ull; now += kFrame) {
+        face.render(cur, t, now);
+        if (face.boardFlipping()) {
+            ++flipFrames;
+            if (flipFrames > best) best = flipFrames;
+            // Mid-flip frames must also LOOK different from their predecessor.
+            // `isFlipping` is the board's own bookkeeping; this is the pixels a
+            // person would actually see move.
+            if (diff(prev, cur, CARD_X, CARD_Y, CARD_W, CARD_H, true) > 0) ++movedFrames;
+        } else {
+            flipFrames = 0;
+        }
+        std::memcpy(prev.buffer(), cur.buffer(), cur.bufferSize());
+    }
+    CAPTURE(best);
+    CAPTURE(movedFrames);
+    CHECK(best >= 10);
+    CHECK(movedFrames >= 10);
 }
 
 TEST_CASE("a discontinuous jump snaps immediately, not mid-cascade") {

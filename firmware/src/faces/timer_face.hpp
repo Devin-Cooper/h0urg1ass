@@ -105,6 +105,15 @@ public:
         return (col == 3) ? secsTens_.getCurrentChar(0, 0) : secsUnits_.getCurrentChar(0, 0);
     }
 
+    /// True while any cell is part-way through a flap. Exposed because the
+    /// animation is only visible if this stays true across many CONSECUTIVE
+    /// frames -- a board that reaches its target within a single frame renders
+    /// a correct readout and correct goldens while showing the user nothing.
+    /// Character- and pixel-level assertions both miss that; this does not.
+    bool boardFlipping() const {
+        return mins_.isFlipping() || secsTens_.isFlipping() || secsUnits_.isFlipping();
+    }
+
     /// Grid-space accessors. Framebuffer measurements cannot separate stranded
     /// sand from lintel ink, so the sand invariants are asserted here instead.
     const SandGrid& sand() const { return vessel_.sand(); }

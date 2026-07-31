@@ -223,9 +223,17 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
     // before coming back down). So: exactly one second less than what was
     // last shown gets the normal capped delta and animates one flap; anything
     // else -- including the first frame, via `settled_` -- snaps.
-    const bool ordinaryTick = settled_ && lastShownSeconds_ != UINT32_MAX &&
-                              lastShownSeconds_ > remaining &&
-                              (lastShownSeconds_ - remaining) == 1;
+    //
+    // The test is "the readout did not JUMP", which includes the frames where
+    // it did not move at all. That distinction is the whole bug this predicate
+    // was first written with: a second changes on one frame in thirty, so
+    // requiring a difference of exactly 1 snapped the other twenty-nine, and
+    // the flap that began on the tick frame was slammed shut before the next
+    // frame reached the glass. The readout, the end state and the goldens were
+    // all correct and the animation was invisible.
+    const bool continuous = settled_ && lastShownSeconds_ != UINT32_MAX &&
+                            lastShownSeconds_ >= remaining &&
+                            (lastShownSeconds_ - remaining) <= 1;
 
     // Derive the animation delta from the caller's clock rather than counting
     // frames, so a tick's flap runs at a real cadence regardless of render
@@ -237,7 +245,7 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
         // settles the board rather than animating it.
         deltaMs = 5000;
         settled_ = true;
-    } else if (ordinaryTick) {
+    } else if (continuous) {
         if (now > lastNow_) {
             const uint64_t d = (now - lastNow_) / 1000ull;
             deltaMs = (d > 1000ull) ? 1000u : static_cast<uint32_t>(d);
