@@ -29,6 +29,26 @@ struct TouchPoint {
     int16_t x = 0;
     int16_t y = 0;
     TouchGesture gesture = TouchGesture::None;
+
+    /// True only on the poll where `gesture` first became non-None.
+    ///
+    /// The register may latch until the next gesture, and main.cpp polls every
+    /// frame while a finger is down -- so a level-triggered reader turns one
+    /// physical swipe into a dozen commands. Anything acting on a gesture must
+    /// test this, not `gesture` alone.
+    bool gestureIsNew = false;
+
+    /// True when x and y are on the panel.
+    ///
+    /// Previously an off-panel coordinate forced `pressed` to false, which made
+    /// a corrupt sample indistinguishable from a finger lift. That is fine for a
+    /// drag -- both mean "do not move the wheel" -- and wrong for anything
+    /// latched per touch: one bad sample mid-drag would look like a release, and
+    /// the next gesture code would be accepted with the finger still down.
+    ///
+    /// Consumers that need a POSITION must test `pressed && positionValid`.
+    /// Consumers that need to know whether the finger is DOWN test `pressed`.
+    bool positionValid = false;
 };
 
 /// CST816-family capacitive touch, I2C 0x15.
@@ -74,6 +94,7 @@ private:
 
     uint8_t chipId_ = 0;
     bool heldAwake_ = false;
+    TouchGesture lastGesture_ = TouchGesture::None;
 };
 
 } // namespace board

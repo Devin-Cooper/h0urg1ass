@@ -549,6 +549,17 @@ int main() {
         board::TouchPoint tp{};
         bool touchRead = false;
 
+        // `pressed` is now the controller's contact truth; a bad coordinate no
+        // longer masquerades as a release. Anything that consumes a POSITION must
+        // test both, or a single corrupt sample becomes a ~4000 px drag delta.
+        //
+        // Computed once a real read lands and held through the rest of the
+        // frame -- the inferred-release path below only ever forces `pressed`
+        // false, which can only take `usable` from false to false, never from
+        // true to false, so a value set here stays correct for the picker logic
+        // further down.
+        bool usable = false;
+
         // The interrupt starts a drag; once a finger is down we poll every frame
         // for the duration. Relying on catching every pulse would drop samples
         // mid-drag, and a picker starved of samples is both unresponsive and --
@@ -560,6 +571,7 @@ int main() {
             g_touchIrq = false;
             ++touchReads;
             touchRead = touch.read(tp);
+            usable = tp.pressed && tp.positionValid;
 
             // The frame is rotated for the inverted posture, so the panel the
             // finger is touching no longer matches the coordinates the
@@ -568,7 +580,7 @@ int main() {
             // `inverted` is latched from the last upright posture, it applies
             // the moment anyone lays the device down to set a timer after
             // turning it over.
-            if (touchRead && inverted && tp.pressed) {
+            if (touchRead && inverted && usable) {
                 tp.x = static_cast<int16_t>(board::lcd::WIDTH - 1 - tp.x);
                 tp.y = static_cast<int16_t>(board::lcd::HEIGHT - 1 - tp.y);
             }
@@ -593,6 +605,7 @@ int main() {
             touchActive = false;
             lastTouchUs = 0;
             tp.pressed = false;
+            usable = false; // the inferred release carries no usable position
             touchRead = true; // deliver the inferred release
         }
         if (touchRead) {
@@ -608,14 +621,14 @@ int main() {
                 // Lock the column on touch-down. A finger drifts sideways during
                 // a vertical drag, and switching wheels mid-gesture would move
                 // whichever one it wandered over.
-                if (tp.pressed && activeCol == 0) {
+                if (usable && activeCol == 0) {
                     activeCol = (tp.x < 120) ? 1 : 2;
                 } else if (!tp.pressed) {
                     activeCol = 0;
                 }
 
-                const int dMin = colMin.update(tp.pressed && activeCol == 1, tp.y);
-                const int dSec = colSec.update(tp.pressed && activeCol == 2, tp.y);
+                const int dMin = colMin.update(usable && activeCol == 1, tp.y);
+                const int dSec = colSec.update(usable && activeCol == 2, tp.y);
 
                 if (dMin != 0 || dSec != 0) {
                     // Both wheels WRAP, and neither carries into the other. A

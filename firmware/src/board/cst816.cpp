@@ -85,7 +85,12 @@ bool Cst816::read(TouchPoint& out) {
     uint8_t b[6];
     if (!readRegs(REG_GESTURE, b, sizeof(b))) return false;
 
-    out.gesture = static_cast<TouchGesture>(b[0]);
+    const TouchGesture g = static_cast<TouchGesture>(b[0]);
+    out.gesture = g;
+    // Edge, not level. See the field's comment in the header.
+    out.gestureIsNew = (g != TouchGesture::None) && (g != lastGesture_);
+    lastGesture_ = g;
+
     out.pressed = (b[1] & 0x0F) != 0; // FingerNum: 0 or 1, nothing else exists
 
     // 12-bit coordinates: the high nibble of each pair carries the top 4 bits,
@@ -94,13 +99,17 @@ bool Cst816::read(TouchPoint& out) {
     const int16_t x = static_cast<int16_t>((static_cast<uint16_t>(b[2] & 0x0F) << 8) | b[3]);
     const int16_t y = static_cast<int16_t>((static_cast<uint16_t>(b[4] & 0x0F) << 8) | b[5]);
 
-    // Reject anything off-panel. A 12-bit mask is not a range check: one corrupt
-    // sample of ~4095 becomes a ~4000 px drag delta, which after the picker's
-    // velocity gain is ~600 units in a single frame -- enough to slam a dialled
-    // duration to zero or to the nine-hour clamp, with no undo.
-    if (x < 0 || x >= 240 || y < 0 || y >= 280) {
-        out.pressed = false;
-        return true; // a valid read of an invalid position
+    // A 12-bit mask is not a range check: one corrupt sample of ~4095 becomes a
+    // ~4000 px drag delta, which after the picker's velocity gain is ~600 units
+    // in a single frame -- enough to slam a dialled duration to zero with no
+    // undo. So the POSITION is rejected...
+    out.positionValid = (x >= 0 && x < 240 && y >= 0 && y < 280);
+    if (!out.positionValid) {
+        // ...but `pressed` keeps reporting what the controller said about
+        // contact. Clearing it here made a corrupt sample look exactly like a
+        // release, which silently cleared any state latched for the duration of
+        // one touch.
+        return true;
     }
 
     out.x = x;
