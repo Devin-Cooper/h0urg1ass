@@ -47,6 +47,7 @@ add_executable(h0urg1ass
     src/board/buzzer.cpp
     src/board/cst816.cpp
     src/board/flash_store.cpp
+    src/board/battery.cpp
     src/faces/timer_face.cpp
     src/render/raster_ops.cpp
     src/faces/setting_face.cpp

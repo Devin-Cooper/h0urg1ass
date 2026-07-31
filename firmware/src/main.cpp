@@ -20,7 +20,6 @@
 #include <cmath>
 #include <cstdio>
 
-#include "hardware/adc.h"
 #include "hardware/clocks.h"
 #include "hardware/i2c.h"
 #include "hardware/structs/sysinfo.h"
@@ -34,6 +33,7 @@
 #include <1bit/render/primitives.hpp>
 
 #include "app/app.hpp"
+#include "board/battery.hpp"
 #include "board/buzzer.hpp"
 #include "board/cst816.hpp"
 #include "board/flash_store.hpp"
@@ -62,10 +62,6 @@ namespace {
 // 125 divides to exactly 62.5. Cannot be named SYS_CLK_KHZ -- pico-sdk defines
 // that as a macro and the collision is baffling.
 constexpr uint32_t kSysClockKhz = 125'000;
-
-/// Battery-sense settling, measured: the 200k/100k divider against C10/C12 on
-/// the tap gives a real RC, and an unsettled read is low by up to 40%.
-constexpr uint32_t kBatterySettleMs = 50;
 
 /// The duration the device starts with.
 constexpr uint64_t kDefaultDurationUs = 2ull * 60ull * 1'000'000ull;
@@ -239,22 +235,6 @@ void resetTouch() {
     gpio_pull_up(board::touch::INT); // pull-UP, so errata E9 does not apply
 }
 
-void initBattery() {
-    adc_init();
-    adc_gpio_init(board::power::BAT_ADC);
-    adc_select_input(board::power::BAT_ADC_CHANNEL);
-    sleep_ms(kBatterySettleMs);
-}
-
-float readBatteryVolts() {
-    adc_select_input(board::power::BAT_ADC_CHANNEL);
-    for (int i = 0; i < 8; ++i) (void)adc_read();
-    uint32_t acc = 0;
-    for (int i = 0; i < 32; ++i) acc += adc_read();
-    return (static_cast<float>(acc) / 32.0f) * 3.3f / 4095.0f *
-           board::power::BAT_DIVIDER_RATIO;
-}
-
 /// Latched by the touch controller's interrupt.
 ///
 /// TP_INT is a ~1 ms PULSE, not a level held while a finger is down. Polling it
@@ -343,7 +323,9 @@ int main() {
 
     initI2c();
     resetTouch();
-    initBattery();
+
+    static board::Battery battery;
+    battery.begin();
 
     static board::Buzzer buzzer;
     buzzer.begin();
@@ -362,11 +344,18 @@ int main() {
     }
     printf("touch %s", touchOk ? "ok" : "NOT FOUND");
     if (touchOk) printf(" id 0x%02X", touch.chipId());
-    printf("\nbattery %.2f V\n", static_cast<double>(readBatteryVolts()));
+    printf("\n");
 
     static board::FlashStore flashStore;
     static h0::SettingsStore settingsStore(flashStore);
     settingsStore.load();
+
+    {
+        const h0::BatteryReading b =
+            battery.sample(time_us_64(), settingsStore.settings().batCalPermille);
+        printf("battery %u mV (%s)\n", static_cast<unsigned>(b.milliVolts),
+               b.calibrated ? "calibrated" : "uncal");
+    }
 
     static board::St7789_1in69 lcd;
     if (!lcd.init()) {
