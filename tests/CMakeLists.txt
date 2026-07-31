@@ -38,7 +38,6 @@ add_library(h0_power STATIC
 )
 target_include_directories(h0_power PUBLIC ${FW_SRC})
 target_link_libraries(h0_power PUBLIC h0_settings)
-target_compile_options(h0_power PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_library(h0_input STATIC
     ${FW_SRC}/input/orientation.cpp
@@ -91,6 +90,7 @@ if(NOT MSVC)
     target_compile_options(h0_faces PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(h0_input PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(h0_settings PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(h0_power PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # Renders faces to .pbm for eyeballing. Separate from the test binary so the
