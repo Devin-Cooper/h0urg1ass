@@ -137,10 +137,18 @@ void runTo(h0::TimerFace& face, const h0::TimerModel& t, uint64_t& now, uint64_t
 
 // ------------------------------------------------------------- the helpers --
 
-TEST_CASE("test helpers: complementIn and cellsInRect mean what they say") {
-    // These three are about to carry the readout's legibility guarantee, so
-    // pin what they actually count before anything relies on it. A helper that
-    // silently returns zero would turn every assertion built on it green.
+TEST_CASE("test helpers: complementIn, cellsInRect and cellDiff mean what they say") {
+    // These three are about to carry the readout's legibility guarantee, so pin
+    // what they actually count before anything relies on it. A helper that
+    // silently returns zero would turn every assertion built on it green -- but
+    // the more dangerous failure is a helper that quietly IGNORES an argument,
+    // because that one still returns plausible numbers. A `cellsInRect` blind
+    // to its rect counts the whole grid, which clears Task 2's `> 100` guard
+    // even when the panel region is empty, rebuilding exactly the vacuous
+    // guarantee this design exists to replace. So every argument is exercised
+    // at a value where ignoring it, or transposing it, changes the answer.
+
+    // -- complementIn --------------------------------------------------------
     Panel a, b;
     a.clear(WHITE);
     b.clear(BLACK);
@@ -148,11 +156,82 @@ TEST_CASE("test helpers: complementIn and cellsInRect mean what they say") {
     b.clear(WHITE);
     CHECK(complementIn(a, b, 0, 0, 40, 40) == 40 * 40); // identical, so nothing flipped
 
+    // A non-square window at a non-zero origin, holding an off-centre patch
+    // that the transposed window (50, 60, 40, 20) would miss entirely. Both the
+    // origin and the w/h order are load-bearing at the real call sites: the
+    // panel sits at (29, 18) and the flap cells inside it are asked about one
+    // at a time, so this helper is essentially never called at (0, 0).
+    constexpr int16_t WX = 50, WY = 60, WW = 20, WH = 40; // x 50..69, y 60..99
+    constexpr int16_t PX = 52, PY = 90, PW = 3, PH = 7;   // in the window, below its transpose
+    auto patch = [&](onebit::IFramebuffer& fb, onebit::Color c) {
+        for (int16_t y = PY; y < PY + PH; ++y)
+            for (int16_t x = PX; x < PX + PW; ++x) fb.setPixel(x, y, c);
+    };
+
+    a.clear(WHITE);
+    b.clear(WHITE);
+    patch(b, BLACK);
+    // Only the patch flipped, so every other pixel in the window is counted.
+    CHECK(complementIn(a, b, WX, WY, WW, WH) == WW * WH - PW * PH);
+
+    b.clear(BLACK);
+    patch(b, WHITE);
+    // The mirror image: everything flipped except the patch, white in both.
+    CHECK(complementIn(a, b, WX, WY, WW, WH) == PW * PH);
+
+    // A window that excludes the patch entirely sees a clean inversion again,
+    // which pins the origin from the other side.
+    CHECK(complementIn(a, b, WX, WY, WW, PY - WY) == 0);
+
+    // -- cellsInRect ---------------------------------------------------------
+    // Hand-built and asymmetric in both axes, so a bound that is ignored,
+    // off by one, or swapped with its partner lands on a different answer.
+    constexpr int GW = h0::SandGrid::W - 1, GH = h0::SandGrid::H - 1;
+    h0::SandGrid g;
+    g.set(3, 1, true);
+    g.set(4, 1, true);
+    g.set(3, 2, true);
+    g.set(60, 90, true);
+
+    CHECK(cellsInRect(g, 0, 0, GW, GH) == 4);
+    CHECK(cellsInRect(g, 3, 1, 4, 2) == 3); // the far cell is outside
+    CHECK(cellsInRect(g, 4, 1, 4, 2) == 1); // cx0 drops column 3
+    CHECK(cellsInRect(g, 3, 1, 3, 2) == 2); // cx1 drops column 4
+    CHECK(cellsInRect(g, 3, 2, 4, 2) == 1); // cy0 drops row 1
+    CHECK(cellsInRect(g, 3, 1, 4, 1) == 2); // cy1 drops row 2
+    CHECK(cellsInRect(g, 3, 1, 3, 1) == 1); // one cell: the bounds are inclusive
+    CHECK(cellsInRect(g, 0, 0, 2, GH) == 0); // a full-height strip left of everything
+    CHECK(cellsInRect(g, 1, 3, 2, 4) == 0);  // the transposed rect: x and y do not commute
+
+    // -- cellDiff ------------------------------------------------------------
+    // Two genuinely different grids. Passing the same grid twice is a tautology
+    // for any implementation, including one that never reads its second
+    // argument -- and "the sand behind the panel changed" is exactly the
+    // question a b-blind cellDiff would answer "no" to forever.
+    h0::SandGrid h = g;
+    h.set(3, 1, false); // set in g, clear in h
+    h.set(70, 5, true); // clear in g, set in h
+
+    CHECK(cellDiff(g, h, 0, 0, GW, GH) == 2);
+    CHECK(cellDiff(h, g, 0, 0, GW, GH) == 2);    // and it is symmetric
+    CHECK(cellDiff(g, h, 3, 1, 4, 2) == 1);      // only the cleared cell is in this rect
+    CHECK(cellDiff(g, h, 60, 80, 80, 100) == 0); // a rect the two agree on
+    CHECK(cellDiff(g, g, 0, 0, GW, GH) == 0);    // a grid never differs from itself
+
+    // -- and against real sand -----------------------------------------------
+    // The distribution is not known ahead of time, but the partition identity
+    // is: any split of the grid must sum to the whole. A rect-blind helper
+    // returns the full count for both halves and doubles the total.
     h0::SandVessel v;
     v.begin();
     v.reset(3u, 400);
-    CHECK(cellsInRect(v.sand(), 0, 0, h0::SandGrid::W - 1, h0::SandGrid::H - 1) == 400);
-    CHECK(cellDiff(v.sand(), v.sand(), 0, 0, 10, 10) == 0);
+    const h0::SandGrid& s = v.sand();
+    const int all = cellsInRect(s, 0, 0, GW, GH);
+    CHECK(all == 400);
+    CHECK(cellsInRect(s, 0, 0, GW, h0::sandgeom::FLOOR_ROW)
+              + cellsInRect(s, 0, h0::sandgeom::FLOOR_ROW + 1, GW, GH)
+          == all);
+    CHECK(cellsInRect(s, 0, 0, GW / 2, GH) + cellsInRect(s, GW / 2 + 1, 0, GW, GH) == all);
 }
 
 // ------------------------------------------------- the legibility mechanism --
