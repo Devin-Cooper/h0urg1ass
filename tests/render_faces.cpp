@@ -8,8 +8,11 @@
 
 #include <1bit/core/framebuffer.hpp>
 
+#include "app/settings_ui.hpp"
 #include "faces/setting_face.hpp"
+#include "faces/settings_face.hpp"
 #include "faces/timer_face.hpp"
+#include "power/battery_model.hpp"
 #include "render/raster_ops.hpp"
 #include "sand/sand_sim.hpp"
 #include "timer/timer_model.hpp"
@@ -114,6 +117,15 @@ int main(int argc, char** argv) {
         // And the whole frame as the inverted posture shows it.
         h0::rotate180(fb);
         emit(fb, dir, "composed-rotated");
+    }
+
+    // The settings face.
+    {
+        h0::SettingsUi ui;
+        ui.open(h0::kDefaults);
+        const h0::BatteryReading bat{3820, 3940, false, true, true};
+        h0::SettingsFace::renderAt(fb, ui, bat);
+        emit(fb, dir, "settings-theme");
     }
 
     return 0;

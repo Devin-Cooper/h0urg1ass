@@ -33,6 +33,13 @@ add_library(h0_settings STATIC
 target_include_directories(h0_settings PUBLIC ${FW_SRC})
 target_link_libraries(h0_settings PUBLIC onebit_host)
 
+add_library(h0_power STATIC
+    ${FW_SRC}/power/battery_model.cpp
+)
+target_include_directories(h0_power PUBLIC ${FW_SRC})
+target_link_libraries(h0_power PUBLIC h0_settings)
+target_compile_options(h0_power PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(h0_input STATIC
     ${FW_SRC}/input/orientation.cpp
     ${FW_SRC}/app/app.cpp
@@ -48,12 +55,13 @@ add_library(h0_faces STATIC
     ${FW_SRC}/faces/timer_face.cpp
     ${FW_SRC}/render/raster_ops.cpp
     ${FW_SRC}/faces/setting_face.cpp
+    ${FW_SRC}/faces/settings_face.cpp
     ${FW_SRC}/sand/sand_sim.cpp
     ${FW_SRC}/sand/sand_render.cpp
     ${FW_SRC}/sand/sand_vessel.cpp
 )
 target_include_directories(h0_faces PUBLIC ${FW_SRC})
-target_link_libraries(h0_faces PUBLIC onebit_host)
+target_link_libraries(h0_faces PUBLIC onebit_host h0_input h0_power)
 
 add_executable(h0urg1ass_tests
     test_timer_model.cpp
@@ -66,6 +74,7 @@ add_executable(h0urg1ass_tests
     test_settings_codec.cpp
     test_settings_store.cpp
     test_settings_ui.cpp
+    test_battery_model.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE

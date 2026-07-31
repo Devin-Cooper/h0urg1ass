@@ -50,6 +50,8 @@ add_executable(h0urg1ass
     src/faces/timer_face.cpp
     src/render/raster_ops.cpp
     src/faces/setting_face.cpp
+    src/faces/settings_face.cpp
+    src/power/battery_model.cpp
     src/input/orientation.cpp
     src/app/app.cpp
     src/input/drag_column.cpp

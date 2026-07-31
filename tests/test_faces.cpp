@@ -3,10 +3,15 @@
 #include "golden.hpp"
 
 #include <1bit/core/framebuffer.hpp>
+#include <1bit/fonts/term_8x12.hpp>
 
 #include <cstdio>
 
+#include "app/settings_ui.hpp"
+#include "faces/layout.hpp"
+#include "faces/settings_face.hpp"
 #include "faces/timer_face.hpp"
+#include "power/battery_model.hpp"
 #include "render/raster_ops.hpp"
 #include "sand/agitation.hpp"
 #include "sand/sand_sim.hpp"
@@ -746,4 +751,88 @@ TEST_CASE("a small tilt moves sand only while the device is being handled") {
     CHECK(at15 > at5);
     CHECK(at20 > at15);
     CHECK(at15 > 15);
+}
+
+// ---------------------------------------------------------- the settings face --
+
+TEST_CASE("settings face: the theme row") {
+    Panel fb;
+    h0::SettingsUi ui;
+    ui.open(h0::kDefaults);
+    h0::BatteryReading bat{};
+    h0::SettingsFace::renderAt(fb, ui, bat);
+    checkGolden(fb, "settings@theme");
+}
+
+namespace {
+
+/// Advance the row wheel by one row. The row wheel never accelerates, so a
+/// single slow drag of exactly one pitch moves exactly one row.
+void nextRow(h0::SettingsUi& ui) {
+    constexpr int16_t PPU = h0::DragColumn::kPixelsPerUnit;
+    int16_t y = 200;
+    ui.onDrag(1, true, y);
+    for (int i = 0; i < PPU; ++i) ui.onDrag(1, true, static_cast<int16_t>(--y));
+    ui.onDrag(1, false, y);
+}
+
+} // namespace
+
+TEST_CASE("settings face: the battery row, calibrated") {
+    Panel fb;
+    h0::SettingsUi ui;
+    h0::Settings s = h0::kDefaults;
+    s.batCalPermille = 1032;
+    ui.open(s);
+    // Bounded: the wheel wraps, so a full lap is the worst case. An unbounded
+    // "while not Battery" loop would hang forever on any indexing bug.
+    for (uint8_t i = 0; i < h0::rowCount() && ui.currentRow() != h0::RowId::Battery; ++i) {
+        nextRow(ui);
+    }
+    REQUIRE(ui.currentRow() == h0::RowId::Battery);
+    h0::BatteryReading bat{3820, 3940, false, true, true};
+    h0::SettingsFace::renderAt(fb, ui, bat);
+    checkGolden(fb, "settings@battery");
+}
+
+TEST_CASE("settings face: mid-drag on the value column") {
+    Panel fb;
+    h0::SettingsUi ui;
+    ui.open(h0::kDefaults);
+    ui.onDrag(2, true, 200);
+    ui.onDrag(2, true, 190); // 10 px of sub-unit offset
+    h0::BatteryReading bat{};
+    h0::SettingsFace::renderAt(fb, ui, bat);
+    checkGolden(fb, "settings@dragging");
+}
+
+TEST_CASE("every settings row's value fits its column and clears the clip") {
+    // The rounded corners and h0::safe both have to hold for EVERY value any
+    // row can display, not just the ones a golden happens to capture.
+    // Both calibration states, because they format differently and only one of
+    // them is exercised by the goldens.
+    for (int cal = 0; cal < 2; ++cal) {
+    h0::BatteryReading bat{3820, 3940, false, cal == 1, true};
+    for (uint8_t r = 0; r < h0::rowCount(); ++r) {
+        const h0::RowId id = static_cast<h0::RowId>(r);
+        const uint8_t n = h0::ladderSize(id);
+        for (uint8_t i = 0; i < (n == 0 ? 1 : n); ++i) {
+            h0::Settings s = h0::kDefaults;
+            if (n > 0) h0::applyLadder(id, i, s);
+            char buf[12];
+            h0::SettingsFace::formatValue(id, i, s, bat, buf, sizeof(buf));
+            const int16_t w =
+                onebit::getBitmapTextWidth(onebit::fonts::TERM_8X12, buf);
+            const int16_t x0 = static_cast<int16_t>(164 - w / 2);
+            const int16_t x1 = static_cast<int16_t>(x0 + w);
+            CHECK(x0 >= 24);   // inside the selection rules
+            CHECK(x1 <= 216);
+            CHECK(x0 >= h0::safe::X);
+            CHECK(x1 <= h0::safe::X + h0::safe::W);
+            // Section 8 caps the value column at 9 characters against the 13 px
+            // gutter that "BLANK AT" leaves. Assert the cap, not just the rules.
+            CHECK(w <= 80);
+        }
+    }
+    }
 }
