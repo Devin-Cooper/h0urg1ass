@@ -26,8 +26,12 @@ public:
     /// two agreeing samples is insurance rather than necessity.
     bool isDown();
 
-    /// Run the shutdown sequence and drop the battery latch. Never returns on
-    /// battery. On USB it returns, because D4 keeps VSYS alive regardless.
+    /// Run the shutdown sequence, drop the battery latch, and spin forever.
+    /// Never returns, on battery or on USB. On battery the rail collapses
+    /// before returning would matter; on USB, D4 keeps VSYS alive through
+    /// GPIO15 regardless, so this parks in a tight loop rather than handing
+    /// control back to a main loop that has no business running with the
+    /// panel asleep and every sensor powered down.
     ///
     /// MUST be called only after the button has been RELEASED. While Key1 is
     /// held, D1 pulls Q3's gate low independently of the latch, so dropping

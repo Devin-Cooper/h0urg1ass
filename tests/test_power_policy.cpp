@@ -30,12 +30,21 @@ PowerInput idleInput(uint64_t now) {
 /// Hold the button from `t0` for `holdMs`, feeding one sample every 33 ms, and
 /// return the last decision seen while still held.
 h0::PowerDecision holdFor(PowerPolicy& p, Settings& s, uint64_t t0, uint64_t holdMs,
-                          bool timerRunning = false) {
+                          bool timerRunning = false, bool onUsb = false) {
+    // Establish that the policy has already seen the button released once,
+    // as every real one has by the time a deliberate hold begins -- see
+    // PowerPolicy::seenRelease_. Without this, holdFor's own first sample
+    // (buttonDown already true) would be mistaken for a boot-stale press and
+    // ignored outright, which is a different thing than what these tests
+    // exist to exercise.
+    p.update(idleInput(t0), s);
+
     h0::PowerDecision d{};
     for (uint64_t t = t0; t <= t0 + holdMs * MS; t += 33 * MS) {
         PowerInput in = idleInput(t);
         in.buttonDown = true;
         in.timerRunning = timerRunning;
+        in.onUsb = onUsb;
         d = p.update(in, s);
     }
     return d;
@@ -46,6 +55,7 @@ h0::PowerDecision holdFor(PowerPolicy& p, Settings& s, uint64_t t0, uint64_t hol
 TEST_CASE("a tap wakes a blanked device and does nothing otherwise") {
     PowerPolicy p;
     Settings s = h0::kDefaults;
+    p.update(idleInput(0), s); // seen released once, as by the time of a real press
 
     PowerInput in = idleInput(1 * SEC);
     in.blanked = true;
@@ -53,6 +63,7 @@ TEST_CASE("a tap wakes a blanked device and does nothing otherwise") {
     CHECK(p.update(in, s).action == PowerAction::Wake);
 
     PowerPolicy q;
+    q.update(idleInput(0), s);
     PowerInput awake = idleInput(1 * SEC);
     awake.buttonDown = true;
     CHECK(q.update(awake, s).action == PowerAction::None);
@@ -104,6 +115,7 @@ TEST_CASE("a running timer needs a second stage, and letting go declines") {
 TEST_CASE("the hold progress is monotonic and fills exactly at the threshold") {
     PowerPolicy p;
     Settings s = h0::kDefaults;
+    p.update(idleInput(0), s); // seen released once, as by the time of a real press
     int last = -1;
     bool sawFull = false;
     // 33 ms steps never land exactly on a 2000 ms boundary (2000 / 33 is not
@@ -178,28 +190,108 @@ TEST_CASE("an invalid battery reading never powers the device off") {
     CHECK(p.update(in, s).action == PowerAction::None);
 }
 
-TEST_CASE("on USB every power-off route says so instead") {
-    // D4 keeps VSYS alive regardless of GPIO15, so dropping the latch does
-    // nothing. A power-off that visibly fails reads as a fault.
+TEST_CASE("on USB the automatic routes stay silent, and the button path says so") {
+    // D4 keeps VSYS alive regardless of GPIO15, so neither automatic route
+    // can ever actually act while on USB. A periodic "cannot power off" would
+    // just be main.cpp treating it as interaction and relighting the screen
+    // every offAfterS forever, for a message the user never asked to see.
     Settings s = h0::kDefaults;
 
     PowerPolicy p;
     PowerInput in = idleInput(10 * SEC);
     in.onUsb = true;
     in.idleUs = 301 * SEC;
-    CHECK(p.update(in, s).action == PowerAction::UsbCannotPowerOff);
+    CHECK(p.update(in, s).action == PowerAction::None);
 
     PowerPolicy q;
     PowerInput flat = idleInput(10 * SEC);
     flat.onUsb = true;
     flat.battery.milliVolts = 3400;
-    CHECK(q.update(flat, s).action == PowerAction::UsbCannotPowerOff);
+    CHECK(q.update(flat, s).action == PowerAction::None);
 
+    // The button path is the opposite: UsbCannotPowerOff must show for the
+    // WHOLE hold past the threshold, not just the release sample, or the
+    // panel spends the hold claiming "release to power off" -- untrue on
+    // USB -- and only admits the truth for one ~25 ms frame.
     PowerPolicy r;
     Settings s2 = h0::kDefaults;
+    CHECK(holdFor(r, s2, 1 * SEC, 2100, false, /*onUsb=*/true).action ==
+          PowerAction::UsbCannotPowerOff);
+
     PowerInput up = idleInput(1 * SEC + 2200 * MS);
     up.onUsb = true;
-    holdFor(r, s2, 1 * SEC, 2100);
     up.buttonDown = false;
     CHECK(r.update(up, s2).action == PowerAction::UsbCannotPowerOff);
+}
+
+TEST_CASE("a timer that just expired does not lose the idle race to its own run") {
+    // isRunning() is state_ == Running, so it goes false the instant expiry
+    // starts the alarm -- but idleUs has been accumulating for the entire,
+    // quietly-counting run, because nothing about a running timer resets it.
+    // Reproduces main.cpp's exact frame pair: a timer running with idleUs
+    // already past offAfterS, then the one frame where timerRunning flips
+    // false and alarmSounding flips true. Without gating on alarmSounding
+    // too, that second frame reads as "not running, idle past the timeout"
+    // and powers the device off before the alarm makes a sound -- silencing
+    // any timer of offAfterS (default 300 s) or longer.
+    PowerPolicy p;
+    Settings s = h0::kDefaults; // offAfterS = 300
+
+    PowerInput running = idleInput(500 * SEC);
+    running.timerRunning = true;
+    running.idleUs = 301 * SEC; // already past offAfterS, timer still running
+    CHECK(p.update(running, s).action == PowerAction::None);
+
+    PowerInput expiring = idleInput(500 * SEC + 33 * MS);
+    expiring.timerRunning = false;  // isRunning() just went false...
+    expiring.alarmSounding = true;  // ...because the alarm just started
+    expiring.idleUs = 301 * SEC + 33 * MS;
+    CHECK(p.update(expiring, s).action == PowerAction::None);
+}
+
+TEST_CASE("a press already down when the policy first runs cannot arm a power-off") {
+    // PowerButton::begin() runs seconds after the press that turned the
+    // device on -- main()'s idle window, LCD init and the sand probe all
+    // land first, with the panel dark the whole time. Without seenRelease_,
+    // that stale press starts accumulating hold time from the first frame
+    // the policy ever sees it, and arms exactly like a deliberate hold.
+    PowerPolicy p;
+    Settings s = h0::kDefaults;
+
+    // Held continuously from t=0, as if the press began before boot. Sweep
+    // well past both thresholds (kConfirmUs is the longer of the two) and
+    // confirm the button path never fires at all.
+    for (uint64_t t = 0; t <= PowerPolicy::kConfirmUs + 1 * SEC; t += 33 * MS) {
+        PowerInput in = idleInput(t);
+        in.buttonDown = true;
+        const h0::PowerDecision d = p.update(in, s);
+        CHECK(d.action == PowerAction::None);
+    }
+
+    // Releasing the stale press must not power the device off either --
+    // armed_ was never set, because the hold was ignored throughout.
+    PowerInput up = idleInput(PowerPolicy::kConfirmUs + 1200 * MS);
+    up.buttonDown = false;
+    CHECK(p.update(up, s).action == PowerAction::None);
+
+    // The button must work normally afterwards: this is a one-time gate on
+    // the boot-stale press, not a policy that has stopped responding.
+    CHECK(holdFor(p, s, PowerPolicy::kConfirmUs + 2 * SEC, 2100).action ==
+          PowerAction::PromptRelease);
+    PowerInput up2 = idleInput(PowerPolicy::kConfirmUs + 2 * SEC + 2200 * MS);
+    up2.buttonDown = false;
+    CHECK(p.update(up2, s).action == PowerAction::PowerOff);
+}
+
+TEST_CASE("a press already down when the policy first runs also suppresses Wake") {
+    // The blanked-screen Wake path is part of the button path too, and the
+    // fix's contract is "ignored entirely" -- not "arming suppressed but
+    // Wake still fires".
+    PowerPolicy p;
+    Settings s = h0::kDefaults;
+
+    PowerInput in = idleInput(1 * SEC);
+    in.buttonDown = true;
+    in.blanked = true;
+    CHECK(p.update(in, s).action == PowerAction::None);
 }

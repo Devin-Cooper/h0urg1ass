@@ -59,10 +59,18 @@ void PowerButton::shutdown(St7789_1in69& lcd, Cst816& touch, Qmi8658& imu,
     // has been released, which is at minimum a two-second hold after boot.
     gpio_put(board::power::SYS_EN, 0);
 
-    // On battery this is never reached. On USB, D4 keeps VSYS alive and the
-    // caller gets control back -- which is why every caller shows a message
-    // rather than assuming this is the end.
+    // On battery the rail collapses about here and none of this is reached.
+    // On USB, D4 keeps VSYS alive regardless of GPIO15, so execution
+    // survives -- and a device that has just decided to be off must stay
+    // off, not fall back into a live main loop with the panel in SLPIN, the
+    // IMU powered down and touch asleep: nothing left running would ever
+    // re-initialise them, control would be running blind, and the idle route
+    // would see the same idle conditions and call this function again next
+    // frame, forever. Spin here instead, so "off" is honest until the cable
+    // comes out. Design spec section 5 step 8 and docs/power-and-time.md
+    // section 6.3 both specify this loop.
     sleep_ms(50);
+    while (true) tight_loop_contents();
 }
 
 } // namespace board

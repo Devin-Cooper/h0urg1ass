@@ -12,8 +12,17 @@ uint8_t progressByte(uint64_t held, uint64_t target) {
 } // namespace
 
 PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
+    if (!in.buttonDown) seenRelease_ = true;
+
     const bool wasDown = wasDown_;
     wasDown_ = in.buttonDown;
+
+    // A press already down the first time this ever sees the button run must
+    // not be able to arm a power-off -- see seenRelease_'s declaration.
+    // Ignored entirely: no Wake, no PromptHold, no PromptRelease, no PowerOff.
+    if (in.buttonDown && !seenRelease_) {
+        return {PowerAction::None, 0};
+    }
 
     // --- the button ------------------------------------------------------
     if (in.buttonDown) {
@@ -34,6 +43,12 @@ PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
 
         if (held >= target) {
             armed_ = true;
+            // D4 keeps VSYS alive on USB regardless of GPIO15, so the hold
+            // can never actually arm a power-off there -- say so for every
+            // frame the hold spends past the threshold, not only the single
+            // release sample, or the panel spends the whole hold claiming
+            // "release to power off" and only admits the truth for ~25 ms.
+            if (in.onUsb) return {PowerAction::UsbCannotPowerOff, 255};
             return {PowerAction::PromptRelease, 255};
         }
         if (in.timerRunning && held >= kHoldUs) {
@@ -54,18 +69,27 @@ PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
     }
 
     // --- the automatic routes --------------------------------------------
-    // A running timer blocks both. Section 9: never enter OFF with a timer
-    // running -- the alarm goes with the RTC's supply and never fires.
-    if (!in.timerRunning) {
+    // A running timer blocks both, and so does a sounding alarm: the alarm
+    // that timer's expiry just raised needs `isRunning()` to have gone false
+    // to start ringing at all, so gating on timerRunning alone would let the
+    // idle route fire in the very frame the alarm starts, if idleUs had
+    // already crossed offAfterS while the timer was counting down (idleUs
+    // accumulates for the whole run, since nothing else about a quietly
+    // counting timer resets it). Section 9: never enter OFF with a timer
+    // running or an alarm sounding -- both go with the RTC's supply and never
+    // fire/finish. Silent on USB: D4 keeps VSYS alive regardless of GPIO15,
+    // so these routes can never actually act there, and re-announcing that
+    // every offAfterS would relight the screen forever for no reason.
+    if (!in.timerRunning && !in.alarmSounding) {
         if (in.battery.valid && in.battery.calibrated &&
             in.battery.milliVolts < kCutoffMv) {
-            return {in.onUsb ? PowerAction::UsbCannotPowerOff
-                             : PowerAction::PowerOff, 0};
+            if (in.onUsb) return {PowerAction::None, 0};
+            return {PowerAction::PowerOff, 0};
         }
         if (s.offAfterS != 0 &&
             in.idleUs >= static_cast<uint64_t>(s.offAfterS) * 1'000'000ull) {
-            return {in.onUsb ? PowerAction::UsbCannotPowerOff
-                             : PowerAction::PowerOff, 0};
+            if (in.onUsb) return {PowerAction::None, 0};
+            return {PowerAction::PowerOff, 0};
         }
     }
 

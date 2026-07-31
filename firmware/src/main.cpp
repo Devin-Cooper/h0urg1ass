@@ -530,6 +530,12 @@ int main() {
     uint64_t lastTouchUs = 0;
     bool touchActive = false;
     uint32_t consecImuFails = 0;
+    // Guards the power-off settings commit against firing on every frame a
+    // hold spends past the threshold, and against firing twice for the same
+    // hold (once at PromptRelease, again at PowerOff). Reset to false
+    // whenever no power-off sequence is in flight, so the next one commits
+    // again.
+    bool settingsCommittedForShutdown = false;
 
     while (true) {
         const uint64_t now = time_us_64();
@@ -857,6 +863,14 @@ int main() {
             say(tickFb);
             printf("-> %s\n", feedbackName(tickFb));
         }
+        // A ringing alarm is the device demanding attention, not idleness --
+        // treating it as the latter is wrong on its own, independently of
+        // PowerPolicy's own alarmSounding gate below. Also isRunning() goes
+        // false the instant expiry starts the alarm, so idleUs has been
+        // accumulating for the timer's entire run right up to this frame;
+        // without this, that accumulated idleUs is still sitting there, past
+        // offAfterS, on the very frame PowerPolicy is fed timerRunning=false.
+        if (tickFb == h0::Feedback::AlarmOn) lastInteractionUs = now;
         buzzer.update(now);
 
         // The power button. Fed once per frame, mirroring backlightFor() just
@@ -874,6 +888,11 @@ int main() {
             pin.buttonDown = powerButton.isDown();
             pin.idleUs = now - lastInteractionUs;
             pin.timerRunning = app.timer().isRunning();
+            // isRunning() alone goes false the instant expiry starts the
+            // alarm, so PowerPolicy needs this too -- same reasoning
+            // backlightFor() was already given app.alarmSounding() for, just
+            // below.
+            pin.alarmSounding = app.alarmSounding();
             pin.blanked = !rendering;
             pin.onUsb = stdio_usb_connected();
             pin.battery = batteryReading;
@@ -883,7 +902,6 @@ int main() {
         switch (powerDecision.action) {
             case h0::PowerAction::Wake:
             case h0::PowerAction::PromptHold:
-            case h0::PowerAction::PromptRelease:
             case h0::PowerAction::PromptTimerRunning:
             case h0::PowerAction::UsbCannotPowerOff:
                 // Force the backlight ladder back to ACTIVE. Without this, a
@@ -892,6 +910,22 @@ int main() {
                 // against a dark panel, and UsbCannotPowerOff would never be
                 // seen at all if it was reached from BLANK.
                 lastInteractionUs = now;
+                break;
+            case h0::PowerAction::PromptRelease:
+                lastInteractionUs = now;
+                // Design section 5: the flash commit happens at the
+                // threshold, not at the eventual release -- so settings
+                // survive a brownout between the two. `sessionSettings`, not
+                // `eff`: `eff` is the settings menu's live, uncommitted
+                // preview while the menu is open, and its contract is that
+                // only the swipe commits and leaving flat cancels. Guarded
+                // so a hold that keeps returning PromptRelease every frame
+                // (this is a level, not an edge) commits exactly once.
+                if (!settingsCommittedForShutdown) {
+                    applySettings(sessionSettings);
+                    settingsStore.commit(sessionSettings);
+                    settingsCommittedForShutdown = true;
+                }
                 break;
             case h0::PowerAction::PowerOff:
                 // Flash first, blocking, THEN the sequence that drops the
@@ -902,11 +936,21 @@ int main() {
                 // call, and ~10 uF of bulk on 3V3 holds the rail about 50 us
                 // even after it drops -- three orders of magnitude short of a
                 // 3 ms page program.
-                applySettings(eff);
-                settingsStore.commit(eff);
+                //
+                // Usually already committed above, at the first PromptRelease
+                // frame -- this is a fallback for the automatic idle and
+                // low-battery routes, which jump straight to PowerOff with no
+                // PromptRelease stage of their own.
+                if (!settingsCommittedForShutdown) {
+                    applySettings(sessionSettings);
+                    settingsStore.commit(sessionSettings);
+                }
                 powerButton.shutdown(lcd, touch, imu, buzzer);
                 break;
             case h0::PowerAction::None:
+                // No power-off sequence in flight, so the next one -- if
+                // any -- must be free to commit again.
+                settingsCommittedForShutdown = false;
                 break;
         }
 

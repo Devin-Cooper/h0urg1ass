@@ -4,8 +4,6 @@
 #include <1bit/render/bitmap_font.hpp>
 #include <1bit/render/primitives.hpp>
 
-#include "faces/layout.hpp"
-
 namespace h0 {
 
 namespace {
