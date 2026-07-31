@@ -7,6 +7,24 @@ cmake_minimum_required(VERSION 3.16)
 set(PICO_BOARD pico2 CACHE STRING "Board type")
 set(PICO_PLATFORM rp2350 CACHE STRING "Platform")
 
+# pico2.h defaults PICO_FLASH_SIZE_BYTES to 4 MB; this board carries a discrete
+# 16 MB W25Q128JVSIQ.
+#
+# This MUST be the CMake variable, not a compile definition, AND it MUST be set
+# before pico_sdk_import.cmake is included below -- not merely before
+# pico_sdk_init(). pico_sdk_import.cmake pulls in pico_pre_load_platform, which
+# parses the board header (pico2.h's `pico_board_cmake_set_default(
+# PICO_FLASH_SIZE_BYTES, ...)`) immediately, before project() or pico_sdk_init()
+# ever run. If PICO_FLASH_SIZE_BYTES isn't already defined at that point, the
+# board file's 4 MB default is taken silently and never registered as an
+# override, so pico_base_headers never gets a matching -D and the code falls
+# back to pico2.h's own `#define PICO_FLASH_SIZE_BYTES (4 * 1024 * 1024)`. The
+# LINKER region reads PICO_FLASH_SIZE_BYTES later, inside pico_standard_link,
+# so it looks correct either way -- only the compiled code silently keeps
+# believing 4 MB. Setting the variable here, before the include, is what makes
+# both the linker region and the in-code macro agree at 16 MB.
+set(PICO_FLASH_SIZE_BYTES 16777216)
+
 include(pico_sdk_import.cmake)
 
 project(h0urg1ass C CXX ASM)
@@ -28,6 +46,7 @@ add_executable(h0urg1ass
     src/board/qmi8658.cpp
     src/board/buzzer.cpp
     src/board/cst816.cpp
+    src/board/flash_store.cpp
     src/faces/timer_face.cpp
     src/render/raster_ops.cpp
     src/faces/setting_face.cpp
@@ -37,6 +56,10 @@ add_executable(h0urg1ass
     src/sand/sand_sim.cpp
     src/sand/sand_render.cpp
     src/sand/sand_vessel.cpp
+    src/settings/settings.cpp
+    src/settings/rows.cpp
+    src/settings/settings_codec.cpp
+    src/settings/settings_store.cpp
     ${ONEBIT_SOURCES}
 )
 
@@ -54,12 +77,8 @@ target_link_libraries(h0urg1ass
     hardware_i2c
     hardware_adc
     hardware_clocks
-)
-
-# pico2.h defaults PICO_FLASH_SIZE_BYTES to 4 MB. This board carries a discrete
-# 16 MB W25Q128JVSIQ.
-target_compile_definitions(h0urg1ass PRIVATE
-    PICO_FLASH_SIZE_BYTES=16777216
+    pico_flash
+    hardware_flash
 )
 
 # Console over native USB. GPIO0/1 are broken out to test points, but USB-C is
