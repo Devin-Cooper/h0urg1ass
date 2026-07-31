@@ -375,6 +375,118 @@ TEST_CASE("the board settles within one second of every tick") {
     }
 }
 
+TEST_CASE("one real second drives exactly one flap on the seconds-units cell, "
+          "then the board holds") {
+    // The cadence property the fix is FOR: with every transition costing one
+    // flap and ms_per_flap = 500, a real second can never need more than one
+    // flap's animation on any cell. This pins that directly, rather than only
+    // pinning the end state the way the test above does -- it is the
+    // difference between "the board is right a second later" (already
+    // covered) and "the board did not sit on the wrong digit, or bounce, or
+    // keep moving after it landed" (not covered by a once-a-second sample).
+    //
+    // Duration picked so only the seconds-units cell moves at the first tick:
+    // "00:15" -> "00:14" leaves minutes and the seconds-tens digit untouched,
+    // so a stray flap anywhere else in that window would show up here too.
+    h0::TimerModel t;
+    t.setDuration(15 * SEC);
+    t.start(0);
+    h0::TimerFace face;
+
+    Panel fb;
+    face.render(fb, t, 0); // first-ever render snaps rather than cascading
+    REQUIRE(face.boardChar(4) == '5');
+
+    // Sweep at a real render cadence (~30 Hz, matching firmware/src/main.cpp)
+    // rather than jumping, so this is the same calling pattern the board
+    // actually sees -- a coarse jump exercises the separate one-second
+    // catch-up cap in TimerFace::render, not the per-flap cadence this test
+    // is about.
+    constexpr uint64_t kFrame = 33'333ull;
+    bool sawOld = false, changed = false;
+    uint64_t changedAt = 0;
+    for (uint64_t now = kFrame; now <= 1'900'000ull; now += kFrame) {
+        face.render(fb, t, now);
+        const char c = face.boardChar(4);
+        CAPTURE(now);
+        if (!changed) {
+            if (c == '5') { sawOld = true; continue; }
+            REQUIRE(c == '4'); // one flap, forward -- nothing else is reachable
+            changed = true;
+            changedAt = now;
+        } else {
+            CHECK(c == '4'); // landed, and it does not bounce afterwards
+        }
+        // The rest of the board never moves: this second's tick is entirely
+        // the seconds-units cell's business.
+        CHECK(face.boardChar(0) == '0');
+        CHECK(face.boardChar(1) == '0');
+        CHECK(face.boardChar(3) == '1');
+    }
+    CHECK(sawOld);
+    CHECK(changed);
+
+    // However the flip-accumulator's phase happened to land, one flap is at
+    // most ms_per_flap of animation -- 500 ms -- so the cell is unconditionally
+    // settled well before the second is up. Confirm the RENDERED FRAME, not
+    // just the character, is pixel-static from there to the end of the
+    // window: that is "the board is static for the remainder", not merely
+    // "the glyph index stopped changing".
+    Panel a, b;
+    face.render(a, t, changedAt + 500'000ull);
+    face.render(b, t, changedAt + 900'000ull);
+    CHECK(diff(a, b, CARD_X, CARD_Y, CARD_W, CARD_H, true) == 0);
+}
+
+TEST_CASE("a discontinuous jump snaps immediately, not mid-cascade") {
+    // Companion to the test above: that one pins the TICK path (animate).
+    // This one pins the JUMP path (snap) -- a reset, a resume, an expiry, or
+    // a skipped second must never be handed to the animator, because the
+    // target it would be chasing keeps moving as the clock counts down
+    // underneath a still-cascading board. Before the tick-vs-jump fix,
+    // render() could not tell "one second passed" from "the model jumped",
+    // so it fed BOTH the same capped delta -- fine at the old 110 ms/flap
+    // (nine flaps of budget), but at 500 ms/flap a jump needing more than two
+    // flaps landed mid-cascade on the very next frame. Checked by hand: with
+    // the tick-vs-jump fix reverted (ordinaryTick always true, i.e. every
+    // frame uses the animate path) this test fails -- the board still reads
+    // "00:5X" a frame after the reset rather than "01:00".
+    h0::TimerModel t;
+    t.setDuration(60 * SEC); // "01:00"
+    t.start(0);
+    h0::TimerFace face;
+    Panel fb;
+
+    uint64_t now = 0;
+    face.render(fb, t, now); // first-ever render snaps rather than cascading
+    // Run it down at a real cadence so the board is genuinely settled
+    // mid-countdown, not merely freshly snapped.
+    for (int i = 0; i < 90; ++i) { now += 33'333ull; face.render(fb, t, now); }
+
+    char before[8];
+    const uint32_t remBefore = t.remainingSeconds(now);
+    std::snprintf(before, sizeof(before), "%02u:%02u", remBefore / 60, remBefore % 60);
+    for (int16_t c = 0; c < 5; ++c) REQUIRE(face.boardChar(c) == before[c]);
+
+    // The flip: back to full, discontinuously. "00:5X" -> "01:00" needs up to
+    // nine flaps on the minutes-units cell alone (0 -> 1 is the long way
+    // around a descending sequence) -- far more than the two flaps a single
+    // capped render() call can afford at 500 ms/flap, so a cascade would be
+    // impossible to miss here.
+    t.reset(now);
+    now += 33'333ull; // the very next frame, same as the real render loop
+    face.render(fb, t, now);
+
+    char want[8];
+    const uint32_t rem = t.remainingSeconds(now);
+    std::snprintf(want, sizeof(want), "%02u:%02u", rem / 60, rem % 60);
+    REQUIRE(std::strcmp(want, "01:00") == 0); // the reset landed where expected
+    for (int16_t c = 0; c < 5; ++c) {
+        CAPTURE(c);
+        CHECK(face.boardChar(c) == want[c]); // right there -- not mid-cascade
+    }
+}
+
 TEST_CASE("the board spells the time across the whole representable range") {
     // The dial is capped at 99:59, so this is exact everywhere -- the clamp in
     // formatMMSS is unreachable rather than merely unlikely. This is the whole

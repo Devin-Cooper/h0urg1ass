@@ -56,7 +56,7 @@ static_assert(kLabelY + 9 <= sandgeom::LINTEL_IN_Y + sandgeom::LINTEL_IN_H,
 /// "02:::" for about 110 ms, once a minute, forever. Measured, not theorised.
 ///
 /// So the separator is not a flap cell at all -- it never changes, so it is
-/// drawn as static ink, and the board becomes two independent two-cell units.
+/// drawn as static ink.
 const char kSequence[] = "9876543210";
 // Derived, never written by hand. Upstream shipped a default sequence declaring
 // 40 for a 41-character literal, which made the last character unreachable --
@@ -64,24 +64,46 @@ const char kSequence[] = "9876543210";
 // with no diagnostic. The same typo here would be just as quiet.
 constexpr int16_t kSequenceLen = static_cast<int16_t>(sizeof(kSequence) - 1);
 
-/// One two-cell unit, at a given column offset.
-onebit::SplitFlapConfig makeConfig(int16_t col0) {
+/// The seconds-TENS cell only ever displays '0'-'5' -- a minute has no more than
+/// 59 seconds. Its own sequence, rather than sharing kSequence, is what turns
+/// the minute-boundary wrap 0 -> 5 from five flaps into one: '5' sits right
+/// after '0' in THIS cycle, exactly as every other digit sits after its
+/// successor. That is the whole fix -- see the header for the symptom it kills.
+const char kTensSequence[] = "543210";
+constexpr int16_t kTensSequenceLen = static_cast<int16_t>(sizeof(kTensSequence) - 1);
+
+/// Every transition on the board, minutes and seconds alike, now costs exactly
+/// one flap (a flip-to-reset excepted -- see TimerFace::restart). One flap
+/// every real second is the requested cadence: ~500 ms of animation, then
+/// ~500 ms static, with nothing left to outrun the clock.
+constexpr uint32_t kMsPerFlap = 500;
+
+/// The shared geometry and cosmetics for a flap unit -- everything but the
+/// sequence and the column span, which differ between the mm unit and the two
+/// one-cell ss units.
+onebit::SplitFlapConfig baseConfig(int16_t col0, int16_t cols) {
     onebit::SplitFlapConfig cfg;
     cfg.font = &onebit::fonts::FLAP_13X26;
     cfg.cell_width = kCellW;
     cfg.cell_height = kCellH;
-    cfg.cols = 2;
+    cfg.cols = cols;
     cfg.rows = 1;
     cfg.bounds = {static_cast<int16_t>(kBoardX + col0 * kCellW), kBoardY,
-                  static_cast<int16_t>(2 * kCellW), kCellH};
-    cfg.flap_sequence = kSequence;
-    cfg.sequence_length = kSequenceLen;
-    // With the colon gone the worst transition is the seconds-tens wrap 0 -> 5,
-    // at five flaps, so this must stay under ~200 ms to land inside one second.
-    // 110 leaves comfortable margin.
-    cfg.ms_per_flap = 110;
+                  static_cast<int16_t>(cols * kCellW), kCellH};
+    cfg.ms_per_flap = kMsPerFlap;
     cfg.split_line_thickness = 1;
     cfg.cell_borders = true;
+    return cfg;
+}
+
+/// The two-cell minutes unit, or a one-cell seconds unit -- `seq`/`seq_len`
+/// picked per cell so the seconds-tens cell can carry its own five-flap-free
+/// sequence.
+onebit::SplitFlapConfig makeConfig(int16_t col0, int16_t cols, const char* seq,
+                                    int16_t seq_len) {
+    onebit::SplitFlapConfig cfg = baseConfig(col0, cols);
+    cfg.flap_sequence = seq;
+    cfg.sequence_length = seq_len;
     return cfg;
 }
 
@@ -130,7 +152,10 @@ void drawSeparator(onebit::IFramebuffer& fb) {
 
 } // namespace
 
-TimerFace::TimerFace() : mins_(makeConfig(0)), secs_(makeConfig(3)) {}
+TimerFace::TimerFace()
+    : mins_(makeConfig(0, 2, kSequence, kSequenceLen)),
+      secsTens_(makeConfig(3, 1, kTensSequence, kTensSequenceLen)),
+      secsUnits_(makeConfig(4, 1, kSequence, kSequenceLen)) {}
 
 void TimerFace::restart(const TimerModel& t, uint32_t seed) {
     vessel_.begin();
@@ -174,17 +199,37 @@ void TimerFace::setTickHz(uint16_t hz) {
 void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now) {
     // Board state first: it touches no pixels, and doing it here keeps the
     // drawing sequence below unbroken.
+    const uint32_t remaining = t.remainingSeconds(now);
     char want[8];
-    formatMMSS(t.remainingSeconds(now), want, sizeof(want));
+    formatMMSS(remaining, want, sizeof(want));
     if (std::strcmp(want, shown_) != 0) {
         char mm[3] = {want[0], want[1], 0};
+        char st[2] = {want[3], 0};
+        char su[2] = {want[4], 0};
         mins_.setRow(0, mm);
-        secs_.setRow(0, want + 3);
+        secsTens_.setRow(0, st);
+        secsUnits_.setRow(0, su);
         std::snprintf(shown_, sizeof(shown_), "%s", want);
     }
 
+    // Animate a tick, snap a jump. A real split-flap board cascades because
+    // each flap is a physical card that must fall; this one is drawn, and the
+    // only thing worth animating is the passage of a second. A reset, a
+    // resume, an expiry, or a skipped second is not that -- it is a
+    // discontinuity, and the target keeps moving as the clock counts down
+    // underneath a cascading board, so animating it means showing a value
+    // that is not the time for several seconds while the board chases a
+    // moving target and even overshoots (minutes climbing the long way up
+    // before coming back down). So: exactly one second less than what was
+    // last shown gets the normal capped delta and animates one flap; anything
+    // else -- including the first frame, via `settled_` -- snaps.
+    const bool ordinaryTick = settled_ && lastShownSeconds_ != UINT32_MAX &&
+                              lastShownSeconds_ > remaining &&
+                              (lastShownSeconds_ - remaining) == 1;
+
     // Derive the animation delta from the caller's clock rather than counting
-    // frames, so the flaps run at a real cadence regardless of render rate.
+    // frames, so a tick's flap runs at a real cadence regardless of render
+    // rate.
     uint32_t deltaMs = 0;
     if (!settled_) {
         // Snap on the first frame instead of cascading through the sequence from
@@ -192,13 +237,21 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
         // settles the board rather than animating it.
         deltaMs = 5000;
         settled_ = true;
-    } else if (now > lastNow_) {
-        const uint64_t d = (now - lastNow_) / 1000ull;
-        deltaMs = (d > 1000ull) ? 1000u : static_cast<uint32_t>(d);
+    } else if (ordinaryTick) {
+        if (now > lastNow_) {
+            const uint64_t d = (now - lastNow_) / 1000ull;
+            deltaMs = (d > 1000ull) ? 1000u : static_cast<uint32_t>(d);
+        }
+        // else: the clock did not advance -- deltaMs stays 0, no animation
+        // this frame, same as before this change.
+    } else {
+        deltaMs = 5000; // a jump, not a tick -- snap rather than cascade
     }
     lastNow_ = now;
+    lastShownSeconds_ = remaining;
     mins_.update(deltaMs);
-    secs_.update(deltaMs);
+    secsTens_.update(deltaMs);
+    secsUnits_.update(deltaMs);
 
     // The draw order is not negotiable. renderSand ASSIGNS raw bytes across the
     // whole safe box, so anything drawn before it is annihilated silently.
@@ -223,7 +276,8 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
     // this repo does not own.
     mins_.render(fb);
     drawSeparator(fb);
-    secs_.render(fb);
+    secsTens_.render(fb);
+    secsUnits_.render(fb);
 
     const char* label = nullptr;
     switch (t.state()) {

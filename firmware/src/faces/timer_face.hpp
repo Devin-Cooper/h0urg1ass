@@ -29,12 +29,25 @@ namespace h0 {
 /// length`. With the library's default alphanumeric sequence a digit *decrement*
 /// -- what a countdown does every second -- costs 39 flaps, 5.19 s at the
 /// default cadence. The board never lands, and what it shows instead of digits
-/// is letters. A descending digits-only sequence makes a decrement one flap, and
-/// the worst transition becomes the seconds-tens wrap 0 -> 5 at five.
+/// is letters. A descending digits-only sequence makes a decrement one flap.
 ///
-/// The same reasoning excludes the colon from the sequence, and therefore splits
-/// the readout into two two-cell units: a cycle containing ':' is a ':' every
+/// That leaves one exception: the seconds-tens digit only ever holds '0'-'5',
+/// and at a minute boundary it wraps 0 -> 5 -- five flaps in a ten-character
+/// sequence, which no longer lands inside the one second it has to run in. The
+/// fix is not a faster cadence, it is a smaller cycle: the seconds-tens cell
+/// gets its own six-character sequence, in which '5' immediately follows '0', so
+/// that wrap costs one flap like every other transition on the board. That is
+/// why the seconds pair is two independent ONE-cell units rather than one
+/// two-cell unit -- only the tens cell needs the different sequence, and a
+/// shared cell cannot carry two.
+///
+/// The same reasoning excludes the colon from every sequence, and therefore the
+/// separator is a fourth, unmoving unit: a cycle containing ':' is a ':' every
 /// digit cell passes through when it wraps.
+///
+/// With every transition costing exactly one flap, `ms_per_flap` sets the whole
+/// board's cadence directly: ~500 ms of animation once a second, then static
+/// for the rest of it, with no cell left catching up.
 class TimerFace {
 public:
     TimerFace();
@@ -88,8 +101,8 @@ public:
     /// Column 2 is the separator, which is painted rather than flapped.
     char boardChar(int16_t col) const {
         if (col == 2) return ':';
-        return (col < 2) ? mins_.getCurrentChar(col, 0)
-                         : secs_.getCurrentChar(static_cast<int16_t>(col - 3), 0);
+        if (col < 2) return mins_.getCurrentChar(col, 0);
+        return (col == 3) ? secsTens_.getCurrentChar(0, 0) : secsUnits_.getCurrentChar(0, 0);
     }
 
     /// Grid-space accessors. Framebuffer measurements cannot separate stranded
@@ -107,11 +120,14 @@ private:
     SandVessel vessel_;
     Agitation agitation_;
 
-    // Two independent two-cell units with a painted separator between them,
+    // Three independent flap units with a painted separator between them,
     // rather than one five-cell board. A flap sequence is a cycle, so a colon
-    // in it is a colon every digit cell passes through on a wrap.
+    // in it is a colon every digit cell passes through on a wrap -- and the
+    // seconds-tens cell needs a sequence of its own (see the class comment),
+    // which a shared two-cell seconds unit could not carry.
     onebit::SplitFlapDisplay mins_;
-    onebit::SplitFlapDisplay secs_;
+    onebit::SplitFlapDisplay secsTens_;
+    onebit::SplitFlapDisplay secsUnits_;
 
     bool started_ = false;
     bool muted_ = false;
@@ -122,6 +138,13 @@ private:
     uint64_t lastNow_ = 0; ///< for deriving the flap animation delta
     bool settled_ = false; ///< first frame snaps rather than cascading
     char shown_[8] = {0};  ///< last string handed to the board
+
+    /// Whole seconds remaining as of the last render() call. UINT32_MAX means
+    /// "nothing shown yet" -- unreachable otherwise, since the dial is capped
+    /// at 99:59. Compared against the CURRENT remaining seconds each call to
+    /// tell an ordinary one-second tick (animate) from a discontinuity: a
+    /// reset, a resume, an expiry, or a skipped second (snap). See render().
+    uint32_t lastShownSeconds_ = UINT32_MAX;
 };
 
 } // namespace h0
