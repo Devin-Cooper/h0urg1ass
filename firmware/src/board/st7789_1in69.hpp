@@ -67,6 +67,13 @@ public:
     void setInverted(bool on);
     bool inverted() const { return uiInverted_; }
 
+    /// Set the theme's ink and paper. Must be followed by a full-frame push --
+    /// the dirty-rect tracker has no idea the colours moved, so nothing repaints
+    /// on its own.
+    void setColors(uint32_t ink, uint32_t paper) {
+        WindowedDisplayDriver::setColors(ink, paper);
+    }
+
     /// Block until DMA has drained *and* the SPI shift register is empty, then
     /// release CS. `writePixels` only queues a transfer, so anything timing a
     /// push -- or about to stop the clock -- must call this first.
