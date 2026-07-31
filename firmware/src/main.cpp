@@ -33,6 +33,7 @@
 #include <1bit/render/primitives.hpp>
 
 #include "app/app.hpp"
+#include "app/settings_ui.hpp"
 #include "board/battery.hpp"
 #include "board/buzzer.hpp"
 #include "board/cst816.hpp"
@@ -42,6 +43,7 @@
 #include "board/st7789_1in69.hpp"
 #include "input/drag_column.hpp"
 #include "faces/setting_face.hpp"
+#include "faces/settings_face.hpp"
 #include "faces/timer_face.hpp"
 #include "input/orientation.hpp"
 #include "render/raster_ops.hpp"
@@ -298,6 +300,8 @@ const char* feedbackName(h0::Feedback f) {
         case h0::Feedback::Rejected: return "REJECT";
         case h0::Feedback::AlarmOn:  return "ALARM";
         case h0::Feedback::AlarmOff: return "HUSH";
+        case h0::Feedback::SettingsOpen:  return "SETTINGS";
+        case h0::Feedback::SettingsSaved: return "SAVED";
         case h0::Feedback::None:     return "";
     }
     return "";
@@ -390,6 +394,37 @@ int main() {
     static h0::GravityFilter filter;
     static h0::DragColumn colMin, colSec;
     static uint8_t activeCol = 0; // 0 none, 1 minutes, 2 seconds
+    static h0::SettingsUi settingsUi;
+    static h0::GestureGate gestureGate;
+    static h0::BatteryReading batteryReading;
+
+    // Push settings into the subsystems that own them. Called on load, on every
+    // live edit, and on cancel -- so a preview and a restore go through exactly
+    // the same path and cannot disagree.
+    auto applySettings = [&](const h0::Settings& s) {
+        const h0::Theme& t = h0::themeFor(static_cast<h0::ThemeId>(s.themeId));
+        lcd.setColors(t.ink, t.paper);
+        // The tracker has no idea the colours moved, so without this the panel
+        // keeps showing the old theme until something else happens to dirty it.
+        tracker.markAllDirty();
+        app.setAlarmTimeout(static_cast<uint64_t>(s.alarmS) * 1'000'000ull);
+        // face.setMuted(s.mute != 0); -- added in Task 14; omit until then
+    };
+
+    // MUTE silences the only acknowledgement channel a wholly invisible gesture
+    // vocabulary has. It ships at the user's explicit direction; Task 14 adds
+    // the glyph that makes the state visible rather than only audible-by-absence.
+    //
+    // Reads the LIVE settings, not the stored ones, so toggling SOUND previews
+    // like every other row.
+    auto say = [&](h0::Feedback f) {
+        const bool muted = settingsUi.isOpen() ? settingsUi.live().mute
+                                               : settingsStore.settings().mute;
+        if (!muted) buzzer.play(f);
+    };
+
+    applySettings(settingsStore.settings());
+    lcd.setBacklight(settingsStore.settings().backlightActive);
 
     // Seed a duration without pretending the device is flat. Forcing the
     // setting posture at boot left the picker live in the hand whenever the
@@ -465,6 +500,17 @@ int main() {
     while (true) {
         const uint64_t now = time_us_64();
 
+        // THE settings every consumer reads this frame.
+        //
+        // While the menu is open this is the in-progress edit, not the stored
+        // one -- which is what makes live preview real. Reading
+        // settingsStore.settings() here instead would mean dragging BRIGHT
+        // changes nothing on the glass until the swipe commits, and "live
+        // preview is the only honest way to choose a brightness" is the whole
+        // reason the commit model looks the way it does.
+        const h0::Settings& eff =
+            settingsUi.isOpen() ? settingsUi.live() : settingsStore.settings();
+
         h0::Vec3 raw{};
         const bool imuRead = imuOk && imu.readRaw(raw);
         if (!imuRead) {
@@ -520,14 +566,34 @@ int main() {
             }
 
             if (ev != h0::MotionEvent::None) {
-                const h0::Feedback fbk = app.onMotion(ev, now);
                 lastInteractionUs = now;
-                if (fbk != h0::Feedback::None) {
-                    buzzer.play(fbk);
-                    printf("[%s] -> %s  %lus left\n", orientationName(orient.current()),
-                           feedbackName(fbk),
-                           static_cast<unsigned long>(app.timer().remainingSeconds(now)));
+                if (settingsUi.isOpen()) {
+                    // Leaving flat cancels, and the motion is CONSUMED: a raise
+                    // that closes settings must not also start the timer.
+                    //
+                    // Only Raised and Silence are reachable from flat. Flip is
+                    // not -- orientation.cpp clears flipArmed_ on entering
+                    // FlatBack -- so a Flip branch here would be dead code.
+                    const h0::Settings restored = settingsUi.cancel();
+                    applySettings(restored);
+                    say(h0::Feedback::Rejected);
+                } else {
+                    const h0::Feedback fbk = app.onMotion(ev, now);
+                    if (fbk != h0::Feedback::None) {
+                        say(fbk);
+                        printf("[%s] -> %s  %lus left\n",
+                               orientationName(orient.current()), feedbackName(fbk),
+                               static_cast<unsigned long>(
+                                   app.timer().remainingSeconds(now)));
+                    }
                 }
+            }
+
+            // Backstop for the paths that leave flat WITHOUT an event at all --
+            // flat -> edge -> upright never produces Raised.
+            if (settingsUi.isOpen() && !app.settingPosture()) {
+                applySettings(settingsUi.cancel());
+                say(h0::Feedback::Rejected);
             }
         }
 
@@ -598,6 +664,39 @@ int main() {
             touchRead = true; // deliver the inferred release
         }
         if (touchRead) {
+            // `usable` was computed above where the read landed (or forced false
+            // by the inferred-release path); reused here rather than re-derived.
+            //
+            // Entry and exit: a sideways swipe, while flat. Both directions mean
+            // the same thing, which sidesteps the coordinate mirroring above
+            // entirely -- a gesture that means the same either way does not care
+            // which way up the device is held.
+            //
+            // Evaluated BEFORE the reset below, or the gate's per-touch latch is
+            // cleared before it can be read.
+            const bool swipeEdge = tp.gestureIsNew &&
+                                   (tp.gesture == board::TouchGesture::SlideLeft ||
+                                    tp.gesture == board::TouchGesture::SlideRight);
+            const bool dragged = usable && (colMin.tracking() || colSec.tracking() ||
+                                            settingsUi.activeColumn() != 0);
+
+            if (gestureGate.onTouch(tp.pressed, swipeEdge, dragged, now) &&
+                app.settingPosture()) {
+                lastInteractionUs = now;
+                if (settingsUi.isOpen()) {
+                    const h0::Settings out = settingsUi.commit();
+                    const bool ok = settingsStore.commit(out);
+                    applySettings(out);
+                    // A failed write plays Rejected, not Saved. The settings
+                    // still apply for this session; the user simply must not be
+                    // told they persisted when they did not.
+                    say(ok ? h0::Feedback::SettingsSaved : h0::Feedback::Rejected);
+                } else {
+                    settingsUi.open(eff);
+                    say(h0::Feedback::SettingsOpen);
+                }
+            }
+
             // The horizontal swipe used to cycle faces. With one face there is
             // nothing to cycle, so the gesture is now free -- deliberately left
             // unbound rather than given a second job, because a gesture with no
@@ -606,14 +705,21 @@ int main() {
                 colMin.reset();
                 colSec.reset();
                 activeCol = 0;
+                settingsUi.onDrag(0, false, tp.y);
+            } else if (settingsUi.isOpen()) {
+                if (usable) {
+                    // Same column lock as the picker, same boundary.
+                    if (activeCol == 0) activeCol = (tp.x < 120) ? 1 : 2;
+                    if (settingsUi.onDrag(activeCol, true, tp.y)) {
+                        applySettings(settingsUi.live());
+                    }
+                }
             } else if (app.settingPosture()) {
                 // Lock the column on touch-down. A finger drifts sideways during
                 // a vertical drag, and switching wheels mid-gesture would move
                 // whichever one it wandered over.
                 if (usable && activeCol == 0) {
                     activeCol = (tp.x < 120) ? 1 : 2;
-                } else if (!tp.pressed) {
-                    activeCol = 0;
                 }
 
                 const int dMin = colMin.update(usable && activeCol == 1, tp.y);
@@ -653,12 +759,15 @@ int main() {
 
         const h0::Feedback tickFb = app.tick(now);
         if (tickFb != h0::Feedback::None) {
-            buzzer.play(tickFb);
+            say(tickFb);
             printf("-> %s\n", feedbackName(tickFb));
         }
         buzzer.update(now);
 
-        if (app.settingPosture()) {
+        if (settingsUi.isOpen()) {
+            batteryReading = battery.sample(now, eff.batCalPermille);
+            h0::SettingsFace::renderAt(fb, settingsUi, batteryReading);
+        } else if (app.settingPosture()) {
             // The dial replaces the face while flat: a rotary control with no
             // visible ring is undiscoverable, and the timer is not counting
             // anyway.
@@ -687,6 +796,20 @@ int main() {
         if (want != backlight) {
             backlight = want;
             lcd.setBacklight(backlight);
+        }
+
+        // All four conditions, per the design's section 5.3: not flat, no timer,
+        // no alarm, and the screen ALREADY DARK. The last is not politeness --
+        // ~400 ms of masked interrupts drops the ~1 ms edge-latched touch pulse
+        // outright, so this has to happen when nobody is touching the glass.
+        //
+        // `backlight == 0` stands in for Task 13's `want.level == 0` -- there is
+        // no `want` struct yet, and neither backlight level here is ever zero,
+        // so this gate is a no-op until that task tightens it.
+        if (settingsStore.needsErase() && !app.settingPosture() &&
+            !settingsUi.isOpen() && !app.timer().isRunning() &&
+            !app.alarmSounding() && backlight == 0) {
+            settingsStore.runDeferredErase();
         }
 
         // Rotate the FINISHED frame rather than teaching the simulation, the

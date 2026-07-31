@@ -74,6 +74,17 @@ void Buzzer::play(h0::Feedback f) {
         case h0::Feedback::AlarmOff:
             add(MID, 50);
             break;
+        case h0::Feedback::SettingsOpen:
+            // Two flat mid blips. Distinct from Resumed (one HIGH) and from
+            // Started (MID then HIGH, rising) -- this one does not rise, which
+            // is the audible difference: nothing has started, a door opened.
+            add(MID, 40); add(0, 40); add(MID, 40);
+            break;
+        case h0::Feedback::SettingsSaved:
+            // Descending. Every other confirmation in the set rises, so a fall
+            // reads as "put away" rather than as "off you go".
+            add(HIGH, 45); add(0, 25); add(MID, 70);
+            break;
         case h0::Feedback::None:
             tone(0);
             return;

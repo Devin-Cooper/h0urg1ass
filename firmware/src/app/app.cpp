@@ -88,7 +88,7 @@ Feedback App::tick(uint64_t now) {
         return Feedback::AlarmOn;
     }
 
-    if (alarmOn_ && now - alarmSince_ >= kAlarmTimeoutUs) {
+    if (alarmOn_ && now - alarmSince_ >= alarmTimeoutUs_) {
         // Give up making noise, but keep the expiry: the face still reads DONE
         // so the user learns what happened when they come back.
         alarmOn_ = false;

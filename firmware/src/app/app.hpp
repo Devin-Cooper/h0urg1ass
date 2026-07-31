@@ -22,6 +22,8 @@ enum class Feedback : uint8_t {
     Rejected,  ///< the gesture was understood and declined
     AlarmOn,
     AlarmOff,
+    SettingsOpen,  ///< the settings screen appeared
+    SettingsSaved, ///< settings were written to flash
 };
 
 /// Ties motion to the timer, and owns everything the faces do not.
@@ -38,6 +40,10 @@ public:
     /// stops. The expiry itself is not forgotten -- the face still reads DONE --
     /// only the noise stops.
     static constexpr uint64_t kAlarmTimeoutUs = 60ull * 1'000'000ull;
+
+    /// How long a finished alarm keeps sounding. Runtime, so the settings menu
+    /// can reach it; kAlarmTimeoutUs remains the compiled-in default.
+    void setAlarmTimeout(uint64_t us) { alarmTimeoutUs_ = us; }
 
     /// Apply a motion event. Returns what the buzzer should say.
     Feedback onMotion(MotionEvent e, uint64_t now);
@@ -72,6 +78,7 @@ private:
     bool flat_ = false;
     bool alarmOn_ = false;
     uint64_t alarmSince_ = 0;
+    uint64_t alarmTimeoutUs_ = kAlarmTimeoutUs;
 };
 
 } // namespace h0
