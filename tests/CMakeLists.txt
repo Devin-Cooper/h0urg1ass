@@ -57,6 +57,7 @@ add_library(h0_faces STATIC
     ${FW_SRC}/render/raster_ops.cpp
     ${FW_SRC}/faces/setting_face.cpp
     ${FW_SRC}/faces/settings_face.cpp
+    ${FW_SRC}/faces/power_face.cpp
     ${FW_SRC}/sand/sand_sim.cpp
     ${FW_SRC}/sand/sand_render.cpp
     ${FW_SRC}/sand/sand_vessel.cpp

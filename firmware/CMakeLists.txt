@@ -53,6 +53,7 @@ add_executable(h0urg1ass
     src/render/raster_ops.cpp
     src/faces/setting_face.cpp
     src/faces/settings_face.cpp
+    src/faces/power_face.cpp
     src/power/battery_model.cpp
     src/power/backlight_policy.cpp
     src/power/power_policy.cpp
@@ -87,6 +88,15 @@ target_link_libraries(h0urg1ass
     hardware_clocks
     pico_flash
     hardware_flash
+)
+
+# stdio_usb_connected() defaults to requiring DTR, which a terminal asserts and
+# a bare charger never does -- so a device on a dumb charger would read as "on
+# battery" and the power policy would try to power it off. This makes it mean
+# tud_ready() instead: enumerated and not suspended, which is what the power
+# policy's USB check actually wants.
+target_compile_definitions(h0urg1ass PRIVATE
+    PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
 )
 
 # Console over native USB. GPIO0/1 are broken out to test points, but USB-C is

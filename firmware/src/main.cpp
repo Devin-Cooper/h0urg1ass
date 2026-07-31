@@ -39,14 +39,17 @@
 #include "board/cst816.hpp"
 #include "board/flash_store.hpp"
 #include "board/pins.hpp"
+#include "board/power_button.hpp"
 #include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
 #include "input/drag_column.hpp"
+#include "faces/power_face.hpp"
 #include "faces/setting_face.hpp"
 #include "faces/settings_face.hpp"
 #include "faces/timer_face.hpp"
 #include "input/orientation.hpp"
 #include "power/backlight_policy.hpp"
+#include "power/power_policy.hpp"
 #include "render/raster_ops.hpp"
 #include "sand/sand_render.hpp"
 #include "sand/sand_sim.hpp"
@@ -312,6 +315,11 @@ int main() {
     static board::Buzzer buzzer;
     buzzer.begin();
 
+    // GPIO14, input with pull-up. Cheap enough to bring up this early; the
+    // policy that reads it is seeded down with the other app-state statics.
+    static board::PowerButton powerButton;
+    powerButton.begin();
+
     static board::Qmi8658 imu;
     const bool imuOk = imu.begin();
     printf("IMU %s", imuOk ? "ok" : "NOT FOUND");
@@ -359,6 +367,10 @@ int main() {
     static h0::SettingsUi settingsUi;
     static h0::GestureGate gestureGate;
     static h0::BatteryReading batteryReading;
+    // The two-stage hold, the idle rule and the calibration gate -- all of it
+    // pure, and re-derived from `powerButton.isDown()` once per frame below.
+    static h0::PowerPolicy powerPolicy;
+    static h0::PowerDecision powerDecision;
     // True once a wheel has actually ADVANCED during the current touch --
     // distinct from mere contact, which both DragColumn::tracking() and
     // SettingsUi::activeColumn() latch on the first, reference-establishing
@@ -847,6 +859,57 @@ int main() {
         }
         buzzer.update(now);
 
+        // The power button. Fed once per frame, mirroring backlightFor() just
+        // below -- and deliberately run BEFORE idleUs is computed there, for
+        // the same reason touch and motion update lastInteractionUs ahead of
+        // that line above: a hold that begins on a blanked screen must force
+        // the backlight ladder back to ACTIVE on THIS frame, not the next one,
+        // or the prompt would be decided but never drawn. `blanked` reads
+        // `rendering` as of the START of this frame -- the ladder has not run
+        // yet this iteration, so that is exactly "is the screen dark right
+        // now".
+        {
+            h0::PowerInput pin;
+            pin.now = now;
+            pin.buttonDown = powerButton.isDown();
+            pin.idleUs = now - lastInteractionUs;
+            pin.timerRunning = app.timer().isRunning();
+            pin.blanked = !rendering;
+            pin.onUsb = stdio_usb_connected();
+            pin.battery = batteryReading;
+            powerDecision = powerPolicy.update(pin, eff);
+        }
+
+        switch (powerDecision.action) {
+            case h0::PowerAction::Wake:
+            case h0::PowerAction::PromptHold:
+            case h0::PowerAction::PromptRelease:
+            case h0::PowerAction::PromptTimerRunning:
+            case h0::PowerAction::UsbCannotPowerOff:
+                // Force the backlight ladder back to ACTIVE. Without this, a
+                // hold that starts after the screen has blanked would run the
+                // whole two-second gesture -- bar filling, threshold reached --
+                // against a dark panel, and UsbCannotPowerOff would never be
+                // seen at all if it was reached from BLANK.
+                lastInteractionUs = now;
+                break;
+            case h0::PowerAction::PowerOff:
+                // Flash first, blocking, THEN the sequence that drops the
+                // latch. settingsStore is a main() local; board::PowerButton
+                // has no business knowing it exists, so the commit lives here
+                // rather than inside shutdown(). There is no power-fail
+                // window: GPIO15 is still driven high through this entire
+                // call, and ~10 uF of bulk on 3V3 holds the rail about 50 us
+                // even after it drops -- three orders of magnitude short of a
+                // 3 ms page program.
+                applySettings(eff);
+                settingsStore.commit(eff);
+                powerButton.shutdown(lcd, touch, imu, buzzer);
+                break;
+            case h0::PowerAction::None:
+                break;
+        }
+
         const uint64_t idleUs = now - lastInteractionUs;
         // `eff`, not settingsStore.settings() -- see Task 12 Step 2. Dragging
         // BRIGHT or DIM TO must move the backlight as the finger moves, which is
@@ -882,7 +945,16 @@ int main() {
         }
 
         if (rendering) {
-            if (settingsUi.isOpen()) {
+            // The prompt is a dedicated full-screen face, never an overlay --
+            // at one bit, text over the falling sand is unreadable -- so it
+            // takes priority over every other face rather than drawing atop
+            // one.
+            if (powerDecision.action == h0::PowerAction::PromptHold ||
+                powerDecision.action == h0::PowerAction::PromptRelease ||
+                powerDecision.action == h0::PowerAction::PromptTimerRunning ||
+                powerDecision.action == h0::PowerAction::UsbCannotPowerOff) {
+                h0::PowerFace::renderAt(fb, powerDecision.action, powerDecision.progress);
+            } else if (settingsUi.isOpen()) {
                 h0::SettingsFace::renderAt(fb, settingsUi, batteryReading);
             } else if (app.settingPosture()) {
                 // The dial replaces the face while flat: a rotary control with

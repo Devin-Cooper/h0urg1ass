@@ -9,6 +9,7 @@
 
 #include "app/settings_ui.hpp"
 #include "faces/layout.hpp"
+#include "faces/power_face.hpp"
 #include "faces/settings_face.hpp"
 #include "faces/timer_face.hpp"
 #include "power/battery_model.hpp"
@@ -862,4 +863,16 @@ TEST_CASE("the mute glyph appears only when muted, and changes nothing else") {
             CHECK(plain.getPixel(x, y) == muted.getPixel(x, y));
         }
     }
+}
+
+TEST_CASE("power face: the hold prompt, half filled") {
+    Panel fb;
+    h0::PowerFace::renderAt(fb, h0::PowerAction::PromptHold, 128);
+    checkGolden(fb, "power@hold");
+}
+
+TEST_CASE("power face: the release prompt") {
+    Panel fb;
+    h0::PowerFace::renderAt(fb, h0::PowerAction::PromptRelease, 255);
+    checkGolden(fb, "power@release");
 }
