@@ -646,22 +646,34 @@ is irrelevant. This is why the bug in §6.4 is invisible on the bench.
 
 ```c
 void power_off(void) {
-    timer_cancel_and_disarm();      // clear PCF85063A AIE/AF; disarm AON alarm
     buzzer_off();
     settings_commit_blocking();     // <-- flash MUST be finished; see below
-    rtc_clear_session_cookie();     // RAM_byte = 0x00, so this reads as clean
-    lcd_sleep_in();                 // ST7789 SLPIN (0x10)
-    backlight_set(0);               // GPIO25 low
-    touch_sleep(); imu_power_down();
+
+    // timer_cancel_and_disarm() and rtc_clear_session_cookie() would go here, but neither
+    // exists, and there is no PCF85063A driver to disarm or clear anything against -- the
+    // part is an address constant at pins.hpp:55 and nothing else. Both are issue #8, which
+    // is what first arms an RTC alarm; until then there is nothing to disarm and no session
+    // cookie to clear.
 
     ui_show("Release to power off");
     while (!gpio_get(14)) tight_loop_contents();   // wait for button release
     sleep_ms(50);                                   // debounce
 
+    backlight_set(0);               // GPIO25 low
+    lcd_sleep_in();                 // ST7789 SLPIN (0x10) -- after the backlight, or this
+                                     // shows a lit blank screen
+    touch_sleep(); imu_power_down();
+
     gpio_put(15, 0);                // T1 off → R9 pulls Q3 gate to B+ → Q3 off
     while (true) tight_loop_contents();             // never reached on battery
 }
 ```
+
+Matches `board::PowerButton::shutdown()` (`firmware/src/board/power_button.cpp`), modulo the
+polling loop above standing in for the debounced `PromptRelease` / `PowerOff` split that
+`h0::PowerPolicy` actually performs once per frame (design spec §5). The message and the
+release wait now come *before* the panel goes dark, not after — showing "release to power
+off" on a screen already put to sleep was the defect.
 
 Two subtleties:
 
@@ -1080,7 +1092,7 @@ component figures in §8.2.*
 | **ACTIVE** | on, BL 64/256 = **25 %** | 125 MHz | **~28 mA** | ~18 h | Touch, an IMU motion event, PWR press, alarm firing, or wake from any state | 20 s with neither touch nor motion → DIMMED. A sounding alarm holds ACTIVE: it is the one moment the device is trying to be seen from across a room. |
 | **DIMMED** | on, BL 36/256 = **14 %**; ST7789 IDMON + partial updates *(not built)* | 48 MHz, WFI between frames *(not built)* | **~23 mA as built, ~13 mA once the clock-down lands** | ~21.5 h → ~38 h | 20 s idle in ACTIVE | Touch/PWR/motion → ACTIVE; 60 s more idle → SCREEN_OFF *(not built)* |
 | **SCREEN_OFF (counting)** | off (SLPIN, BL 0) | POWMAN **P1.0**, all SRAM retained | **~0.32 mA** | ~65 days | 60 s idle in DIMMED **while a timer is running** | RTC /INT (GPIO18, level-low) → ACTIVE; PWR (GPIO14) → ACTIVE; AON backup alarm; IMU wake-on-motion if enabled |
-| **OFF** | off | unpowered | **~32 µA** | ~1.8 yr *(self-discharge dominates)* | Long-press PWR, **or** 5 min idle with **no** timer running, **or** V_batt < 3.45 V | PWR press (hardware, via D1 → Q3) |
+| **OFF** | off | unpowered | **~32 µA** | ~1.8 yr *(self-discharge dominates)* | **Long-press PWR** — built: `board::PowerButton` reads GPIO14 and `h0::PowerPolicy` runs the two-stage hold (`firmware/src/power/power_policy.cpp`). **Or** idle auto-off, configurable via the `OFF AT` settings row (2/5/10/30 min or `NEVER`, default 5 min). **Or** V_batt < 3.45 V, **gated on calibration** — uncalibrated the gain error is ±9 % (±0.35 V) (§7.2), the same reason the battery row already refuses to show a number in that state | PWR press (hardware, via D1 → Q3) |
 
 Draw breakdowns: ACTIVE = 10 (backlight at the 64/256 default) + 16 (MCU/SPI/DMA) + 1.5
 (touch) + 0.09 (LDO Iq) + 0.032 (battery-side) = ~28 mA. At full duty the same state is
