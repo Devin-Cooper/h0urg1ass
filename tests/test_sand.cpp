@@ -1,6 +1,8 @@
 #include "doctest.h"
 
+#include "faces/timer_face.hpp"
 #include "sand/sand_sim.hpp"
+#include "timer/timer_model.hpp"
 
 using h0::Gravity;
 using h0::SandGrid;
@@ -320,4 +322,38 @@ TEST_CASE("grid set and get round-trip across word boundaries") {
     CHECK(g.count() == 8);
     for (int x : xs) g.set(x, 7, false);
     CHECK(g.count() == 0);
+}
+
+TEST_CASE("the drain gate absorbs a tick-rate change") {
+    // The whole justification for ticking at 8 Hz while blanked. The gate is a
+    // proportional controller on a cumulative count, so a slower rate must reach
+    // the same place, not lag and then lurch on the way back.
+    constexpr uint64_t SEC = 1'000'000ull;
+    h0::TimerFace face;
+    h0::TimerModel t;
+    t.setDuration(300 * SEC);
+    t.start(0);
+
+    uint64_t now = 0;
+    face.tick(t, now);                    // seeds the charge
+    const int charge = face.charge();
+    REQUIRE(charge > 0);
+
+    // 60 s at the full rate, then 180 s blanked at 8 Hz.
+    face.setTickHz(30);
+    for (; now < 60 * SEC; now += 33'333) face.tick(t, now);
+    face.setTickHz(8);
+    for (; now < 240 * SEC; now += 125'000) face.tick(t, now);
+
+    // 240 of 300 s elapsed, so 80% should have fallen.
+    const int wantAt240 = static_cast<int>(charge * 0.8f);
+    CHECK(face.lowerCount() > wantAt240 - charge / 10);
+    CHECK(face.lowerCount() < wantAt240 + charge / 10);
+
+    // Back to full rate for a second: no lurch, no stall.
+    const int before = face.lowerCount();
+    face.setTickHz(30);
+    for (; now < 241 * SEC; now += 33'333) face.tick(t, now);
+    CHECK(face.lowerCount() >= before);
+    CHECK(face.lowerCount() < before + charge / 10);
 }

@@ -48,6 +48,15 @@ public:
     /// happens to be redrawn.
     void tick(const TimerModel& t, uint64_t now);
 
+    /// Simulation rate. Reduced while the screen is blanked.
+    ///
+    /// NOT achievable by calling tick() less often: it catches up at most 3
+    /// ticks per call, so an 8 Hz call site still runs 24 ticks a second. The
+    /// drain gate is a proportional controller on a cumulative count, so it
+    /// self-adjusts to whatever rate it is given -- at 5 Hz the ceiling is
+    /// 25 grains/s against the 6.7 the longest tier needs.
+    void setTickHz(uint16_t hz);
+
     /// Recharge and restart the drain.
     void restart(const TimerModel& t, uint32_t seed);
 
@@ -82,8 +91,14 @@ public:
     /// sand from lintel ink, so the sand invariants are asserted here instead.
     const SandGrid& sand() const { return vessel_.sand(); }
     int charge() const { return vessel_.charge(); }
+    int lowerCount() const { return vessel_.lowerCount(); }
 
 private:
+    /// Simulation rate. One tick costs about 4.5 ms on this part, so 30 Hz is
+    /// roughly 13% of the CPU -- affordable, and enough for the drain to look
+    /// continuous. The default, restored whenever setTickHz(0) is called.
+    static constexpr uint64_t kTickPeriodUs = 33'333;
+
     SandVessel vessel_;
     Agitation agitation_;
 
@@ -96,6 +111,7 @@ private:
     bool started_ = false;
     uint32_t lastGen_ = 0;
     uint64_t lastTickUs_ = 0;
+    uint64_t tickPeriodUs_ = kTickPeriodUs;
 
     uint64_t lastNow_ = 0; ///< for deriving the flap animation delta
     bool settled_ = false; ///< first frame snaps rather than cascading

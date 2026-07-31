@@ -46,6 +46,7 @@
 #include "faces/settings_face.hpp"
 #include "faces/timer_face.hpp"
 #include "input/orientation.hpp"
+#include "power/backlight_policy.hpp"
 #include "render/raster_ops.hpp"
 #include "sand/sand_render.hpp"
 #include "sand/sand_sim.hpp"
@@ -67,29 +68,6 @@ constexpr uint32_t kSysClockKhz = 125'000;
 
 /// The duration the device starts with.
 constexpr uint64_t kDefaultDurationUs = 2ull * 60ull * 1'000'000ull;
-
-/// Backlight levels and the idle timeout.
-///
-/// The backlight is roughly 70% of active draw -- about 40 mA at full against
-/// ~16 mA for everything else -- so how long it stays bright is the single
-/// biggest lever on battery life, worth more than every other optimisation
-/// combined. Dimming rather than blanking keeps the timer glanceable.
-/// Quarter brightness. Ample indoors, and it takes the biggest single bite out
-/// of the power budget -- the backlight dominates active draw, so this is worth
-/// more than any amount of tuning elsewhere. It also flatters a white-on-black
-/// display, where a bright backlight mostly lights up the parts of the screen
-/// that are meant to be dark.
-///
-/// Perceived brightness is not linear in duty, so this looks considerably
-/// brighter than a quarter. That is the point: the number that matters is the
-/// current, and the eye barely notices what the battery does.
-constexpr uint8_t kBacklightActive = 64;
-
-/// NOTE: at an active level of 64 this is 56% of it, not the 18% it was against
-/// the old 200 -- so the idle dim is now a slight fade rather than an obvious
-/// state change, and saves correspondingly little.
-constexpr uint8_t kBacklightIdle = 36;
-constexpr uint64_t kIdleAfterUs = 20ull * 1'000'000ull;
 
 /// Hold the soft power latch. GPIO15 -> R3 1k -> T1 base; T1's collector pulls
 /// Q3's gate down, passing the battery through. Until this runs, the board is
@@ -508,7 +486,8 @@ int main() {
     // definite upright posture: flat and face-down have no in-plane direction
     // to read, so they keep whatever was last known rather than flapping.
     bool inverted = false;
-    uint8_t backlight = kBacklightActive;
+    uint8_t backlight = settingsStore.settings().backlightActive;
+    bool rendering = true;
     uint32_t imuFails = 0, touchFails = 0, touchReads = 0;
     uint64_t lastTouchUs = 0;
     bool touchActive = false;
@@ -557,6 +536,16 @@ int main() {
             // never produces the FlatBack->vertical transition that Raised
             // needs, so the picker would stay live in the hand.
             app.setFlat(orient.current() == h0::Orientation::FlatBack);
+
+            // Any change of posture is interaction, event or not. Section 7.4
+            // notes this happens without an event too: flat -> edge -> upright
+            // never produces Raised, so a wake source that only watched events
+            // would leave a device picked up and turned over dark.
+            static h0::Orientation lastOrientation = h0::Orientation::Unknown;
+            if (orient.current() != lastOrientation) {
+                lastOrientation = orient.current();
+                lastInteractionUs = now;
+            }
 
             // The touch controller costs 1.6 mA held awake and 6 uA in its own
             // standby, and touch is only used by the picker. Hold it awake only
@@ -659,10 +648,12 @@ int main() {
                 tp.y = static_cast<int16_t>(board::lcd::HEIGHT - 1 - tp.y);
             }
             if (!touchRead) ++touchFails;
+            // Any successful read is interaction -- including a bare touch IRQ
+            // that resolves to no pressed point, which is otherwise silent.
+            if (touchRead) lastInteractionUs = now;
             if (touchRead && tp.pressed) {
                 touchActive = true;
                 lastTouchUs = now;
-                lastInteractionUs = now;
             } else if (touchRead && !tp.pressed) {
                 touchActive = false;
                 lastTouchUs = 0;
@@ -803,63 +794,81 @@ int main() {
         }
         buzzer.update(now);
 
-        if (settingsUi.isOpen()) {
-            batteryReading = battery.sample(now, eff.batCalPermille);
-            h0::SettingsFace::renderAt(fb, settingsUi, batteryReading);
-        } else if (app.settingPosture()) {
-            // The dial replaces the face while flat: a rotary control with no
-            // visible ring is undiscoverable, and the timer is not counting
-            // anyway.
-            // The DURATION, not the remaining time. The picker edits duration,
-            // so showing remaining meant that laying down a part-run timer
-            // displayed one number and edited another: run 5:00 down to 3:00,
-            // nudge minutes once, and it jumps to 6:00.
-            const uint32_t total =
-                static_cast<uint32_t>(app.timer().duration() / 1'000'000ull);
-            h0::PickerState ps;
-            ps.minutes = total / 60;
-            ps.seconds = total % 60;
-            ps.minutesOffset = colMin.offsetPx();
-            ps.secondsOffset = colSec.offsetPx();
-            ps.activeColumn = activeCol;
-            h0::SettingFace::renderAt(fb, ps);
-        } else {
-            face.render(fb, app.timer(), now);
+        const uint64_t idleUs = now - lastInteractionUs;
+        // `eff`, not settingsStore.settings() -- see Task 12 Step 2. Dragging
+        // BRIGHT or DIM TO must move the backlight as the finger moves, which is
+        // the whole justification for the commit model.
+        const h0::BacklightState want =
+            h0::backlightFor(eff, idleUs, app.alarmSounding());
+
+        if (want.level != backlight) {
+            backlight = want.level;
+            // pwm_set_gpio_level(25, 0) IS sufficient here: this state enters no
+            // POWMAN state, so section 8.6 item 1's pad-isolation warning does
+            // not apply. It becomes binding the day issue #8 lands, at which
+            // point GPIO25 must be taken back as SIO and driven low.
+            if (!lcd.setBacklight(backlight)) printf("backlight set failed\n");
         }
 
-        // A ringing alarm always goes to full brightness: it is the one moment
-        // the device is trying to get attention from across a room.
-        const bool idle = (now - lastInteractionUs) > kIdleAfterUs;
-        const uint8_t want = (app.alarmSounding() || !idle) ? kBacklightActive
-                                                            : kBacklightIdle;
-        if (want != backlight) {
-            backlight = want;
-            lcd.setBacklight(backlight);
+        if (want.render != rendering) {
+            rendering = want.render;
+            face.setTickHz(rendering ? 30 : 8);
+            // The tracker's shadow has no idea what happened while it was not
+            // being fed, so the first frame after a wake is a full one.
+            if (rendering) tracker.markAllDirty();
         }
 
         // All four conditions, per the design's section 5.3: not flat, no timer,
         // no alarm, and the screen ALREADY DARK. The last is not politeness --
         // ~400 ms of masked interrupts drops the ~1 ms edge-latched touch pulse
         // outright, so this has to happen when nobody is touching the glass.
-        //
-        // `backlight == 0` stands in for Task 13's `want.level == 0` -- there is
-        // no `want` struct yet, and neither backlight level here is ever zero,
-        // so this gate is a no-op until that task tightens it.
         if (settingsStore.needsErase() && !app.settingPosture() &&
             !settingsUi.isOpen() && !app.timer().isRunning() &&
-            !app.alarmSounding() && backlight == 0) {
+            !app.alarmSounding() && want.level == 0) {
             settingsStore.runDeferredErase();
         }
 
-        // Rotate the FINISHED frame rather than teaching the simulation, the
-        // picker, the font and the touch map that the device can be turned over.
-        // Everything upstream keeps working in a content space where up is up.
-        if (inverted) h0::rotate180(fb);
+        if (rendering) {
+            if (settingsUi.isOpen()) {
+                batteryReading = battery.sample(now, eff.batCalPermille);
+                h0::SettingsFace::renderAt(fb, settingsUi, batteryReading);
+            } else if (app.settingPosture()) {
+                // The dial replaces the face while flat: a rotary control with
+                // no visible ring is undiscoverable, and the timer is not
+                // counting anyway.
+                // The DURATION, not the remaining time. The picker edits
+                // duration, so showing remaining meant that laying down a
+                // part-run timer displayed one number and edited another: run
+                // 5:00 down to 3:00, nudge minutes once, and it jumps to 6:00.
+                const uint32_t total =
+                    static_cast<uint32_t>(app.timer().duration() / 1'000'000ull);
+                h0::PickerState ps;
+                ps.minutes = total / 60;
+                ps.seconds = total % 60;
+                ps.minutesOffset = colMin.offsetPx();
+                ps.secondsOffset = colSec.offsetPx();
+                ps.activeColumn = activeCol;
+                h0::SettingFace::renderAt(fb, ps);
+            } else {
+                face.render(fb, app.timer(), now);
+            }
+        }
 
         watchdog_update();
 
-        lcd.pushDirty(fb, tracker.update(fb));
-        lcd.waitIdle();
+        // Render, tracker.update and pushDirty move as one unit: updating the
+        // tracker's shadow without pushing (or vice versa) is what makes it
+        // diverge from the panel. Guarded on the same `rendering` value the
+        // render call above used, so the two either both run or both don't.
+        if (rendering) {
+            // Rotate the FINISHED frame rather than teaching the simulation,
+            // the picker, the font and the touch map that the device can be
+            // turned over. Everything upstream keeps working in a content
+            // space where up is up.
+            if (inverted) h0::rotate180(fb);
+            lcd.pushDirty(fb, tracker.update(fb));
+            lcd.waitIdle();
+        }
 
         if (++frames % 200 == 0) {
             printf("  %s raw %+.2f %+.2f %+.2f  %lus  imuFail=%lu touchFail=%lu/%lu\n",

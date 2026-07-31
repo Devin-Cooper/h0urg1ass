@@ -98,12 +98,6 @@ void formatMMSS(uint32_t totalSeconds, char* out, size_t n) {
 
 // ------------------------------------------------------------- the sand --
 
-/// Simulation rate, independent of the frame rate.
-///
-/// One tick costs about 4.5 ms on this part, so 30 Hz is roughly 13% of the
-/// CPU -- affordable, and enough for the drain to look continuous.
-constexpr uint64_t kTickPeriodUs = 33'333;
-
 /// Grains, by duration. Both ends of the range are constrained, in opposite
 /// directions, so no single charge serves them: short timers cannot drain a
 /// large charge (the attractor only moves so many grains per tick) and long
@@ -166,11 +160,15 @@ void TimerFace::tick(const TimerModel& t, uint64_t now) {
     // and stall the UI further.
     if (now < lastTickUs_) lastTickUs_ = now;
     int budget = 3;
-    while (now - lastTickUs_ >= kTickPeriodUs && budget-- > 0) {
-        lastTickUs_ += kTickPeriodUs;
+    while (now - lastTickUs_ >= tickPeriodUs_ && budget-- > 0) {
+        lastTickUs_ += tickPeriodUs_;
         vessel_.tick(f);
     }
-    if (now - lastTickUs_ > kTickPeriodUs * 8) lastTickUs_ = now; // gave up catching up
+    if (now - lastTickUs_ > tickPeriodUs_ * 8) lastTickUs_ = now; // gave up catching up
+}
+
+void TimerFace::setTickHz(uint16_t hz) {
+    tickPeriodUs_ = (hz == 0) ? kTickPeriodUs : (1'000'000ull / hz);
 }
 
 void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now) {
