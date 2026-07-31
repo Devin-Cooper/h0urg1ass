@@ -30,6 +30,12 @@ add_library(h0_input STATIC
 )
 target_include_directories(h0_input PUBLIC ${FW_SRC})
 
+add_library(h0_settings STATIC
+    ${FW_SRC}/settings/settings.cpp
+    ${FW_SRC}/settings/rows.cpp
+)
+target_include_directories(h0_settings PUBLIC ${FW_SRC})
+
 add_library(h0_faces STATIC
     ${FW_SRC}/faces/timer_face.cpp
     ${FW_SRC}/render/raster_ops.cpp
@@ -48,13 +54,14 @@ add_executable(h0urg1ass_tests
     test_app.cpp
     test_drag_column.cpp
     test_sand.cpp
+    test_settings.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${ONEBIT_ROOT}/tests/doctest
 )
-target_link_libraries(h0urg1ass_tests PRIVATE h0_faces h0_input)
+target_link_libraries(h0urg1ass_tests PRIVATE h0_faces h0_input h0_settings)
 target_compile_definitions(h0urg1ass_tests PRIVATE
     GOLDEN_DIR="${CMAKE_CURRENT_LIST_DIR}/golden"
 )
@@ -63,6 +70,7 @@ if(NOT MSVC)
     target_compile_options(h0urg1ass_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(h0_faces PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(h0_input PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(h0_settings PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # Renders faces to .pbm for eyeballing. Separate from the test binary so the
