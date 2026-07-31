@@ -34,6 +34,7 @@ add_library(h0_settings STATIC
     ${FW_SRC}/settings/settings.cpp
     ${FW_SRC}/settings/rows.cpp
     ${FW_SRC}/settings/settings_codec.cpp
+    ${FW_SRC}/settings/settings_store.cpp
 )
 target_include_directories(h0_settings PUBLIC ${FW_SRC})
 
@@ -57,6 +58,7 @@ add_executable(h0urg1ass_tests
     test_sand.cpp
     test_settings.cpp
     test_settings_codec.cpp
+    test_settings_store.cpp
     golden.cpp
 )
 target_include_directories(h0urg1ass_tests PRIVATE
