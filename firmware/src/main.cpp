@@ -348,22 +348,6 @@ int main() {
 
     static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
     static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
-    // Colour is decided in exactly one place: the theme's ink/paper pair, which
-    // the expander bakes into its lookup table. The panel keeps its own INVON
-    // requirement, untouched.
-    //
-    // These two were previously fighting. setInverted(true) sends INVOFF here --
-    // (geometry().invert != uiInverted_) with both true -- so the panel ran with
-    // its mandatory inversion OFF and every RGB565 value reached the glass
-    // COMPLEMENTED. That is invisible while the only colours are 0x0000 and
-    // 0xFFFF, and turns an amber ink into blue the moment a theme exists.
-    {
-        const h0::Theme& t = h0::themeFor(
-            static_cast<h0::ThemeId>(settingsStore.settings().themeId));
-        lcd.setColors(t.ink, t.paper);
-    }
-    lcd.clear(WHITE);
-    lcd.setBacklight(settingsStore.settings().backlightActive);
 
     static h0::TimerFace face;
 
@@ -381,15 +365,44 @@ int main() {
     // sample. Cleared on release, alongside the columns it shadows.
     static bool wheelMovedThisTouch = false;
 
+    // The settings this session behaves as having once the menu is closed.
+    // Deliberately NOT settingsStore.settings(): the commit path below can have
+    // a flash write fail AFTER the edit has already been pushed to every live
+    // subsystem via applySettings(), and this is what stops the session from
+    // straddling two different records when that happens -- every consumer of
+    // `eff` keeps agreeing with what is actually on the hardware, whether or
+    // not that record also reached flash.
+    static h0::Settings sessionSettings = settingsStore.settings();
+
+    // The theme currently pushed to the LCD, so applySettings() below can tell
+    // whether an edit actually changed it. Seeded outside ThemeId's valid range
+    // (0..3), not from sessionSettings.themeId -- the LCD driver's own default
+    // ink/paper need not match the loaded theme, so the first applySettings()
+    // call, at boot below, must always run setColors rather than see a
+    // spurious "unchanged" and skip it.
+    static uint8_t appliedThemeId = static_cast<uint8_t>(h0::ThemeId::Count);
+
     // Push settings into the subsystems that own them. Called on load, on every
     // live edit, and on cancel -- so a preview and a restore go through exactly
     // the same path and cannot disagree.
+    //
+    // setColors + markAllDirty run only when the THEME actually changed. The
+    // design budgets one 19.1 ms full-frame push per THEME step; this lambda
+    // runs on EVERY live edit, and CAL's 151-entry ladder with 5x acceleration
+    // changes on nearly every frame while dragging -- an unconditional push
+    // here would make every CAL step a full-frame push too, and roughly halve
+    // the frame rate for the whole drag. Alarm timeout and mute stay
+    // unconditional: both are cheap regardless of how often they run.
     auto applySettings = [&](const h0::Settings& s) {
-        const h0::Theme& t = h0::themeFor(static_cast<h0::ThemeId>(s.themeId));
-        lcd.setColors(t.ink, t.paper);
-        // The tracker has no idea the colours moved, so without this the panel
-        // keeps showing the old theme until something else happens to dirty it.
-        tracker.markAllDirty();
+        if (s.themeId != appliedThemeId) {
+            appliedThemeId = s.themeId;
+            const h0::Theme& t = h0::themeFor(static_cast<h0::ThemeId>(s.themeId));
+            lcd.setColors(t.ink, t.paper);
+            // The tracker has no idea the colours moved, so without this the
+            // panel keeps showing the old theme until something else happens
+            // to dirty it.
+            tracker.markAllDirty();
+        }
         app.setAlarmTimeout(static_cast<uint64_t>(s.alarmS) * 1'000'000ull);
         face.setMuted(s.mute != 0);
     };
@@ -413,13 +426,26 @@ int main() {
     // Reads the LIVE settings, not the stored ones, so toggling SOUND previews
     // like every other row.
     auto say = [&](h0::Feedback f) {
-        const bool muted = settingsUi.isOpen() ? settingsUi.live().mute
-                                               : settingsStore.settings().mute;
+        const bool muted = settingsUi.isOpen() ? settingsUi.live().mute : sessionSettings.mute;
         if (!muted) buzzer.play(f);
     };
 
-    applySettings(settingsStore.settings());
-    lcd.setBacklight(settingsStore.settings().backlightActive);
+    // Colour is decided in exactly one place: the theme's ink/paper pair, which
+    // the expander bakes into its lookup table. The panel keeps its own INVON
+    // requirement, untouched.
+    //
+    // These two were previously fighting. setInverted(true) sends INVOFF here --
+    // (geometry().invert != uiInverted_) with both true -- so the panel ran with
+    // its mandatory inversion OFF and every RGB565 value reached the glass
+    // COMPLEMENTED. That is invisible while the only colours are 0x0000 and
+    // 0xFFFF, and turns an amber ink into blue the moment a theme exists.
+    //
+    // applySettings() must run before clear() below, or this boot-time clear
+    // paints with whatever colours the driver defaulted to rather than the
+    // loaded theme -- the same class of bug the paragraph above describes.
+    applySettings(sessionSettings);
+    lcd.clear(WHITE);
+    lcd.setBacklight(sessionSettings.backlightActive);
 
     // Seed a duration without pretending the device is flat. Forcing the
     // setting posture at boot left the picker live in the hand whenever the
@@ -504,8 +530,22 @@ int main() {
         // changes nothing on the glass until the swipe commits, and "live
         // preview is the only honest way to choose a brightness" is the whole
         // reason the commit model looks the way it does.
+        //
+        // The closed-menu fallback is sessionSettings, not
+        // settingsStore.settings() -- see its declaration above, and the commit
+        // path below.
         const h0::Settings& eff =
-            settingsUi.isOpen() ? settingsUi.live() : settingsStore.settings();
+            settingsUi.isOpen() ? settingsUi.live() : sessionSettings;
+
+        // Every frame, unconditionally -- board/battery.hpp: "Call every
+        // frame." It self-rate-limits to 1 Hz internally, so this costs
+        // nothing extra; calling it only while settings is open and rendering
+        // (as before) left the IIR unfed for hours between settings visits, so
+        // the first sample after opening the menu moved the displayed voltage
+        // by just 1/16 of however far it had drifted since the boot reading --
+        // and that same stale value drove both the bucket and the CAL row that
+        // calibration exists to be trusted against.
+        batteryReading = battery.sample(now, eff.batCalPermille);
 
         h0::Vec3 raw{};
         const bool imuRead = imuOk && imu.readRaw(raw);
@@ -705,6 +745,17 @@ int main() {
                 if (settingsUi.isOpen()) {
                     const h0::Settings out = settingsUi.commit();
                     const bool ok = settingsStore.commit(out);
+                    // Adopt `out` for the rest of this session regardless of
+                    // `ok`. settingsStore.settings() only updates on a
+                    // successful write, so falling back to it (as `eff` used
+                    // to) would silently revert brightness, the dim/blank
+                    // timeouts and the battery calibration the instant the menu
+                    // closes on a failed commit -- while theme, alarm timeout
+                    // and mute stayed new, because applySettings() below pushes
+                    // those to the hardware unconditionally. sessionSettings
+                    // keeps every field, not only the three applySettings
+                    // happens to touch, in agreement with what is on screen.
+                    sessionSettings = out;
                     applySettings(out);
                     // The picker's own columns are untouched while the menu is
                     // open, so they still hold whatever y they last saw before
@@ -714,9 +765,11 @@ int main() {
                     // dialled duration by however far the finger has moved
                     // since, amplified up to 5x by the velocity gain.
                     resetPickerColumns();
-                    // A failed write plays Rejected, not Saved. The settings
-                    // still apply for this session; the user simply must not be
-                    // told they persisted when they did not.
+                    // A failed write plays Rejected, not Saved: the two differ
+                    // only in whether `out` also reached flash, not in what
+                    // this session looks like from here on -- see
+                    // sessionSettings above. Only a reboot would resurface the
+                    // stale flashed record.
                     say(ok ? h0::Feedback::SettingsSaved : h0::Feedback::Rejected);
                 } else {
                     settingsUi.open(eff);
@@ -830,7 +883,6 @@ int main() {
 
         if (rendering) {
             if (settingsUi.isOpen()) {
-                batteryReading = battery.sample(now, eff.batCalPermille);
                 h0::SettingsFace::renderAt(fb, settingsUi, batteryReading);
             } else if (app.settingPosture()) {
                 // The dial replaces the face while flat: a rotary control with

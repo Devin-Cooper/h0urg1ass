@@ -7,7 +7,8 @@
 namespace h0 {
 
 /// Rows in wheel order. The row wheel WRAPS over these; every value wheel
-/// CLAMPS -- see rows.cpp for why that inverts the picker's rule.
+/// CLAMPS -- see app/settings_ui.cpp (SettingsUi::onDrag, around the row-wheel
+/// and value-wheel update blocks) for why that inverts the picker's rule.
 enum class RowId : uint8_t {
     Theme, Bright, DimTo, DimAt, BlankAt, Alarm, Sound, Battery, Cal, Defaults, Count
 };

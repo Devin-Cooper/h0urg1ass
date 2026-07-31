@@ -87,11 +87,17 @@ bool Cst816::read(TouchPoint& out) {
 
     const TouchGesture g = static_cast<TouchGesture>(b[0]);
     out.gesture = g;
+    out.pressed = (b[1] & 0x0F) != 0; // FingerNum: 0 or 1, nothing else exists
+
     // Edge, not level. See the field's comment in the header.
     out.gestureIsNew = (g != TouchGesture::None) && (g != lastGesture_);
-    lastGesture_ = g;
-
-    out.pressed = (b[1] & 0x0F) != 0; // FingerNum: 0 or 1, nothing else exists
+    // Cleared on release rather than carried into the next press. Whether this
+    // register latches its last value or free-runs to None is still unsettled
+    // -- the hardware bring-up log that would answer it has not been run -- and
+    // this is correct either way: a latching part would otherwise leave
+    // lastGesture_ holding swipe #1's code, so swipe #2 in the SAME direction
+    // reads as unchanged and gestureIsNew never fires again.
+    lastGesture_ = out.pressed ? g : TouchGesture::None;
 
     // 12-bit coordinates: the high nibble of each pair carries the top 4 bits,
     // and the upper nibble holds flags that must be masked off or the point

@@ -96,12 +96,6 @@ bool SettingsUi::onDrag(uint8_t column, bool pressed, int16_t y) {
     return changed;
 }
 
-void GestureGate::reset() {
-    dragThisTouch_ = false;
-    firedThisTouch_ = false;
-    wasPressed_ = false;
-}
-
 bool GestureGate::onTouch(bool pressed, bool swipeEdge, bool dragged, uint64_t now) {
     if (pressed && dragged) dragThisTouch_ = true;
 

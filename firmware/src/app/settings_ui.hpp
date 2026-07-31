@@ -74,8 +74,6 @@ public:
     /// Returns true when the swipe should be acted on.
     bool onTouch(bool pressed, bool swipeEdge, bool dragged, uint64_t now);
 
-    void reset();
-
 private:
     bool dragThisTouch_ = false;
     bool firedThisTouch_ = false;
