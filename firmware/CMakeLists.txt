@@ -58,6 +58,7 @@ add_executable(h0urg1ass
     src/power/backlight_policy.cpp
     src/power/power_policy.cpp
     src/power/auto_cal.cpp
+    src/power/battery_floor.cpp
     src/input/orientation.cpp
     src/app/app.cpp
     src/input/drag_column.cpp
