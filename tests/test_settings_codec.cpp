@@ -198,10 +198,16 @@ TEST_CASE("a record written before these fields existed decodes to their default
     uint8_t rec[h0::kRecordBytes];
     h0::encodeRecord(s, 3, rec);
 
-    // Rewrite the length as the OLD kSettingsBytes and re-CRC, which is
-    // byte-for-byte what an older build produced.
+    // Rewrite the length as the OLD kSettingsBytes and, crucially, ZERO the
+    // bytes that build never wrote. encodeRecord memsets the whole record
+    // first, so an authentic 16-byte record has zeros here -- and without
+    // zeroing them this test cannot fail, because the current encoder has
+    // already filled them with the very defaults the assertions check for.
     rec[8] = 16;
     rec[9] = 0;
+    rec[h0::kHeaderBytes + 16] = 0;
+    rec[h0::kHeaderBytes + 17] = 0;
+    rec[h0::kHeaderBytes + 18] = 0;
     const uint16_t crc = h0::recordCrc(rec);
     rec[10] = static_cast<uint8_t>(crc & 0xFF);
     rec[11] = static_cast<uint8_t>(crc >> 8);
@@ -210,6 +216,12 @@ TEST_CASE("a record written before these fields existed decodes to their default
     uint32_t seq = 0;
     REQUIRE(h0::decodeRecord(rec, seq, out));
     CHECK(out.batCalPermille == 1032);      // the old field still reads
-    CHECK(out.batCalAuto == 1);             // and the new ones default
-    CHECK(out.batFloorRawMv == 0);
+    CHECK(out.batCalAuto == 1);             // and the new ones default -- this is
+                                             // the assertion that actually carries
+                                             // the test, since 1 != the zeroed padding
+    CHECK(out.batFloorRawMv == 0);          // present for completeness only: its
+                                             // default (0) is identical to the zeroed
+                                             // padding, so this assertion can never
+                                             // distinguish a correct default from a
+                                             // guard that silently misread the padding
 }
