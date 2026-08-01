@@ -1,6 +1,7 @@
 #include "board/power_button.hpp"
 
 #include "hardware/gpio.h"
+#include "hardware/structs/pads_bank0.h"
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 
@@ -86,7 +87,31 @@ void PowerButton::shutdown(St7789_1in69& lcd, Cst816& touch, Qmi8658& imu,
     // that may write GPIO15, and the two can never race: latchPower() runs
     // once at boot before anything else, and this runs only after the button
     // has been released, which is at minimum a two-second hold after boot.
+    //
+    // The SIO write ALONE DOES NOTHING, and that was the actual bug behind the
+    // reboot this function's watchdog_disable() was first blamed for.
+    // latchPower() finishes by SETTING this pad's ISO bit, which is what makes
+    // the latch survive a watchdog reset -- and pad isolation works by cutting
+    // the pad off from SIO and holding its level. So the store below lands in
+    // the SIO register and the pad stays high, on battery as much as on USB.
+    // The latch never opened; the rail never collapsed; execution always ran on
+    // into the spin at the bottom of this function.
+    //
+    // ISO resets to 1 and the SDK CLEARS it in gpio_set_function() to make a
+    // pad usable at all ("Remove this once the pad is configured by software").
+    // Clearing it here hands GPIO15 back to SIO, which is already holding the 0
+    // written above, so the pad makes one clean transition to low. R4 then
+    // pulls T1's base down, Q3 opens, and the rail collapses in ~50 us.
+    //
+    // The symptom that identified this: with the watchdog gone the device
+    // looked off but was not -- and pressing RESET (Key3, wired to RUN) and
+    // then power brought it up. RUN resets the always-on domain, which is the
+    // one case the isolation does not survive; the pad was released, THEN the
+    // rail dropped, and only then could the button start the board. A reset
+    // button cannot act on a board that has no power, so the rail being alive
+    // was never in doubt once that was reported.
     gpio_put(board::power::SYS_EN, 0);
+    hw_clear_bits(&pads_bank0_hw->io[board::power::SYS_EN], PADS_BANK0_GPIO0_ISO_BITS);
 
     // On battery the rail collapses about here and none of this is reached.
     // On USB, D4 keeps VSYS alive regardless of GPIO15, so execution
