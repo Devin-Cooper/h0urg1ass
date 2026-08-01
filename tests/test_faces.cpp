@@ -461,9 +461,14 @@ TEST_CASE("the panel is dark ink on white paper, in every state, with a border")
 }
 
 TEST_CASE("a flap cell inverts exactly when sand is behind it") {
-    // The readout is a gauge as well as a clock. Each cell is solid: a covered
-    // cell is the exact COMPLEMENT of the uncovered rendering, never a blend, so
-    // the contrast is total at every sand density.
+    // Each cell is solid: a covered cell is the exact COMPLEMENT of the
+    // uncovered rendering, never a blend, so the contrast is total at every sand
+    // density.
+    //
+    // Note what the legs below have to do to produce a covered cell -- they tilt
+    // the device. That is not an artifact of the fixture: upright, coverage
+    // peaks at 46% of a cell and no cell ever inverts. This mechanism is for
+    // handling, not for reading the fill level. See the header.
     //
     // Three legs, because one is not enough to say anything:
     //

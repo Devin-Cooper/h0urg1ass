@@ -35,8 +35,19 @@ using Rect16 = onebit::Rect;
 /// so every pixel inside it is this class's responsibility.
 ///
 /// **A cell whose sand is behind it is drawn inverted**, which is what keeps the
-/// contrast total instead of letting the readout compete with what is behind it
-/// -- and makes the board a coarse gauge as well as a clock. The board is
+/// contrast total instead of letting the readout compete with what is behind it.
+///
+/// This engages while the device is HANDLED, not as a fill gauge, and the
+/// difference is measured rather than assumed: upright, with gravity pointing
+/// down the whole way, peak coverage is 46% of a cell at the 2000-grain tier
+/// and 0% at 400 -- under the 60% threshold, so no cell inverts at any point in
+/// a five-minute run. `SandVessel::reset` charges a 45-degree cone that does
+/// touch the ceiling, but it collapses into a settled heap below the panel
+/// within the first moments. Tilt the device and coverage goes to 100%; turn it
+/// over and it goes to 100%. That is when black-on-black would otherwise
+/// happen, and that is when this fires.
+///
+/// The board is
 /// rendered to a panel-sized scratch at normal polarity and each cell is then
 /// stamped either way up; it cannot be a raster-op swap, because a flipping cell
 /// writes WHITE to occlude its falling card and an Xor would turn that white

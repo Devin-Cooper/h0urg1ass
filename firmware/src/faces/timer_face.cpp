@@ -226,10 +226,15 @@ void formatMMSS(uint32_t totalSeconds, char* out, size_t n) {
 /// grain lands, and doing it here would mix that diff into the housing's. It is
 /// its own change.
 ///
-/// One consequence is visible and worth knowing about: at 2000 the chamber is a
-/// little over half full, so sand piled against the ceiling is a mound rather
-/// than a slab, and the 2x board is wide enough that its outer two cells sit
-/// past the mound's shoulders. The polarity gauge reads across the middle three.
+/// One consequence shows up when the device is TILTED, which is the only time
+/// the cells invert at all (see the header): at 2000 the chamber is a little
+/// over half full, so sand driven against the ceiling is a mound rather than a
+/// slab, and the 2x board is wide enough that its outer two cells sit past the
+/// mound's shoulders -- the middle three invert and the outer two do not.
+///
+/// Raising the tier would not change that. Measured at 3000 upright, all five
+/// cells do cross the threshold, but for 65 cell-frames out of 45,000: the
+/// charged cone collapses just the same, only from higher up.
 int chargeFor(uint64_t durationUs) {
     const uint64_t s = durationUs / 1'000'000ull;
     if (s <= 60) return 400;

@@ -36,8 +36,8 @@ simulation. The board carries the number; the sand carries the feeling of the ti
 
 The readout stays legible at one bit because **the panel is opaque and drawn last** — the sand
 is painted first, then the panel over it, so black glyphs never land on black sand. Sand piles
-up behind the panel, and each flap cell is stamped inverted where it does, which makes the
-readout a coarse fill gauge as well as a clock and keeps its contrast total either way.
+up behind the panel when the device is tilted or turned over, and each flap cell is stamped
+inverted where it does, so the contrast stays total whichever way the sand moves.
 
 The display runs white on black, using the panel's own `INVON`/`INVOFF`. The framebuffer
 convention is untouched: `BLACK` still means ink everywhere in the code.

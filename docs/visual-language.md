@@ -805,8 +805,8 @@ physics. Every pixel inside the panel is the face's responsibility now; an unpai
 longer paper by default, it is sand. The opacity tests are what hold that up, and they were written
 before the wall was touched.
 
-*And the panel became a gauge.* An opaque plate is a white slab punched through the picture of the
-sand, so each of the five flap cells is stamped either straight or as its exact **complement**,
+*And the panel inverts under sand.* An opaque plate is a white slab punched through the picture of
+the sand, so each of the five flap cells is stamped either straight or as its exact **complement**,
 according to whether sand sits behind it. Coverage is read from the sand *grid*, never from pixels —
 a framebuffer measurement cannot tell a grain from the readout's own ink — and latched with
 hysteresis (invert above 60%, revert below 40%) because grains jitter at a surface and a bare
@@ -819,6 +819,18 @@ its falling card, and under Xor that white would read as "show the sand through 
 is drawn into a panel-sized scratch at normal polarity (2,116 bytes, heap, allocated once) and each
 cell blitted out of it.
 
+*What it is NOT is a fill gauge, and the first draft of this section said it was.* Measured over
+whole runs with gravity pointing down the entire way, peak coverage per cell is 46% at the
+2000-grain tier and 0% at 400 — inside the hysteresis band, never once over the 60% threshold, so
+across 9,000 frames of a five-minute timer **not one cell ever inverts**. `SandVessel::reset` builds
+a 45° cone that does reach the ceiling — frame 0 peaks at 50% — but gravity collapses it into a
+settled heap in the first moments, and a settled heap sits well below the panel. Nor does a bigger
+charge rescue it: driven directly at 3,000 grains all five cells do cross 60%, but for 65 cell-frames
+of 45,000, the same collapse from higher up. What the inversion actually does is hold contrast while
+the device is HANDLED — tilt it and coverage goes to 100/100/90/63/31, turn it over and to
+32/85/100/87/36. That is the black-on-black case this whole change risked, and it is worth having.
+It is simply not a readout of how much sand is left.
+
 **The drain follows the clock, not the physics.** A metered gate at the hole opens only while the
 sand is behind the schedule `TimerModel::fraction()` reports. Charges are sized to the duration —
 400 grains at ≤ 60 s, 900 at ≤ 180 s, 2000 above — because no single charge serves both ends: a
@@ -827,10 +839,11 @@ steppy on a small one. The top tier was 2000 rather than 3000 because the lintel
 upper chamber: capacity with it in place measured 2188 placed, so 2000 was the largest tier with a
 real margin against silent truncation. That constraint has expired — capacity is 3722 now — and the
 tier is left at 2000 deliberately, because raising it moves every grain and that diff belongs to its
-own change rather than mixed into the housing's. One consequence is visible: at 2000 the chamber is
-a little over half full, so sand against the ceiling is a mound rather than a slab, and the 2x board
-is wide enough that its outer two cells sit past the mound's shoulders — the polarity gauge reads
-across the middle three. The simulation ticks on its own clock at 33.3 ms, never once per render,
+own change rather than mixed into the housing's. One consequence is visible when the device is
+tilted: at 2000 the chamber is a little over half full, so sand driven against the ceiling is a
+mound rather than a slab, and the 2x board is wide enough that its outer two cells sit past the
+mound's shoulders — inverting the middle three and leaving the outer two upright. The simulation
+ticks on its own clock at 33.3 ms, never once per render,
 because the drain has to run at a fixed rate whatever the frame rate happens to be. One tick costs
 about 4.5 ms on this part — roughly 13% of the CPU at 30 Hz.
 
