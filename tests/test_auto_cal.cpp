@@ -14,10 +14,16 @@ uint16_t hold(h0::AutoCal& c, uint16_t mv, int n) {
     return got;
 }
 
-/// A charge cycle: settle low, ramp up, then hold at `plateau`.
+/// A charge cycle: settle below the plateau, ramp up to it, then hold.
+///
+/// The start is derived from `plateau`, not fixed: a fixed 3600 mV floor makes
+/// the ramp a no-op for any plateau below it, and the resulting "no rise" would
+/// be indistinguishable from a genuine refusal.
 uint16_t chargeTo(h0::AutoCal& c, uint16_t plateau) {
-    hold(c, 3600, 5);
-    for (uint16_t mv = 3600; mv < plateau; mv = static_cast<uint16_t>(mv + 20)) c.push(mv);
+    const uint16_t start =
+        static_cast<uint16_t>(plateau - h0::AutoCal::kRiseMv - 100);
+    hold(c, start, 5);
+    for (uint16_t mv = start; mv < plateau; mv = static_cast<uint16_t>(mv + 20)) c.push(mv);
     return hold(c, plateau, h0::AutoCal::kFlatSamples + 2);
 }
 
