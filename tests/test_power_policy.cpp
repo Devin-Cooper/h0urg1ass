@@ -161,26 +161,6 @@ TEST_CASE("OFF AT set to NEVER never fires") {
     CHECK(p.update(in, s).action == PowerAction::None);
 }
 
-TEST_CASE("the low-battery cutoff fires only on a calibrated device") {
-    // Uncalibrated the gain error is +/-9%, or +/-0.35 V, so a reading of
-    // 3.45 V could be a true 3.16 V or a true 3.79 V. The battery row already
-    // refuses to show a number in that state; the cutoff refuses to act on one.
-    Settings s = h0::kDefaults;
-
-    PowerPolicy p;
-    PowerInput flat = idleInput(10 * SEC);
-    flat.battery.milliVolts = 3400;
-    CHECK(p.update(flat, s).action == PowerAction::PowerOff);
-
-    for (uint16_t mv = 3000; mv <= 3450; mv += 50) {
-        PowerPolicy q;
-        PowerInput uncal = idleInput(10 * SEC);
-        uncal.battery.milliVolts = mv;
-        uncal.battery.calibrated = false;
-        CHECK(q.update(uncal, s).action == PowerAction::None);
-    }
-}
-
 TEST_CASE("an invalid battery reading never powers the device off") {
     PowerPolicy p;
     Settings s = h0::kDefaults;
@@ -294,4 +274,51 @@ TEST_CASE("a press already down when the policy first runs also suppresses Wake"
     in.buttonDown = true;
     in.blanked = true;
     CHECK(p.update(in, s).action == PowerAction::None);
+}
+
+TEST_CASE("a flat battery does not power off until a floor has been learned") {
+    // The gate the whole floor mechanism exists to control. Before the first
+    // run to empty there is no measured floor, so there is nothing to act on
+    // and the route stays disabled -- which is exactly today's behaviour.
+    h0::PowerPolicy p;
+    h0::Settings s;
+    s.batFloorRawMv = 0;
+
+    h0::PowerInput in;
+    in.now = 10'000'000ull;
+    in.battery.valid = true;
+    in.battery.milliVolts = 3000; // far below any plausible cutoff
+
+    CHECK(p.update(in, s).action == h0::PowerAction::None);
+}
+
+TEST_CASE("a learned floor arms the cutoff") {
+    h0::PowerPolicy p;
+    h0::Settings s;
+    s.batFloorRawMv = 3380;
+    s.batCalPermille = 1000; // cutoff = 3380 + 250 = 3630
+
+    h0::PowerInput in;
+    in.now = 10'000'000ull;
+    in.battery.valid = true;
+
+    in.battery.milliVolts = 3700;
+    CHECK(p.update(in, s).action == h0::PowerAction::None);
+
+    in.battery.milliVolts = 3600;
+    CHECK(p.update(in, s).action == h0::PowerAction::PowerOff);
+}
+
+TEST_CASE("the armed cutoff is silent on USB, like the other automatic routes") {
+    h0::PowerPolicy p;
+    h0::Settings s;
+    s.batFloorRawMv = 3380;
+
+    h0::PowerInput in;
+    in.now = 10'000'000ull;
+    in.onUsb = true;
+    in.battery.valid = true;
+    in.battery.milliVolts = 3000;
+
+    CHECK(p.update(in, s).action == h0::PowerAction::None);
 }

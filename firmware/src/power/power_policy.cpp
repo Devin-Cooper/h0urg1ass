@@ -1,5 +1,7 @@
 #include "power/power_policy.hpp"
 
+#include "power/battery_floor.hpp"
+
 namespace h0 {
 
 namespace {
@@ -81,8 +83,14 @@ PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
     // so these routes can never actually act there, and re-announcing that
     // every offAfterS would relight the screen forever for no reason.
     if (!in.timerRunning && !in.alarmSounding) {
-        if (in.battery.valid && in.battery.calibrated &&
-            in.battery.milliVolts < kCutoffMv) {
+        // The cutoff is DERIVED, not fixed, and zero means "no floor learned
+        // yet, so there is nothing to act on". That gate used to be
+        // `battery.calibrated`, which in practice was never true -- the gain
+        // stayed at its 1000 default because calibrating it needed a meter --
+        // so this route has never once fired on a real device.
+        const uint16_t cutoff =
+            BatteryFloor::cutoffMv(s.batFloorRawMv, s.batCalPermille);
+        if (in.battery.valid && cutoff != 0 && in.battery.milliVolts < cutoff) {
             if (in.onUsb) return {PowerAction::None, 0};
             return {PowerAction::PowerOff, 0};
         }

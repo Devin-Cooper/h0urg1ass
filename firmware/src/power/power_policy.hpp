@@ -47,10 +47,6 @@ public:
     static constexpr uint64_t kHoldUs = 2'000'000ull;
     /// Total hold needed to override a running timer.
     static constexpr uint64_t kConfirmUs = 4'000'000ull;
-    /// Below this the LDO's dropout starts corrupting the ADC reference, which
-    /// makes the battery read artificially HIGH exactly when it is nearly flat.
-    /// The cell itself would tolerate 3.0 V; this threshold is about the rail.
-    static constexpr uint16_t kCutoffMv = 3450;
 
     PowerDecision update(const PowerInput& in, const Settings& s);
 
