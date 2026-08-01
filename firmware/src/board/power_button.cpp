@@ -1,6 +1,7 @@
 #include "board/power_button.hpp"
 
 #include "hardware/gpio.h"
+#include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 
 #include "board/buzzer.hpp"
@@ -52,6 +53,34 @@ void PowerButton::shutdown(St7789_1in69& lcd, Cst816& touch, Qmi8658& imu,
     touch.setHeldAwake(false);
     imu.powerDown();
 
+    // MUST come before the latch drop, and it is what stops a power-off being
+    // undone eight seconds later.
+    //
+    // Everything below assumes the rail collapses. When it does not -- VBUS is
+    // present and D4 is holding VSYS up, which the onUsb guard misses for a
+    // charger or a power-only cable, since it reads USB ENUMERATION and not
+    // VBUS -- execution survives into the spin at the bottom of this function.
+    // That spin feeds nothing, so main()'s 8 s watchdog bites, and a watchdog
+    // reset is precisely the case latchPower() was taught to survive: the pad
+    // ISO bit holds GPIO15 through it, main() re-asserts the latch, and the
+    // device that was just switched off is on again. Then it idles out and
+    // does the whole thing again. The two features are each correct; together
+    // they make power-off reversible.
+    //
+    // Disabling rather than feeding it, because there is nothing left to
+    // protect: no main loop, panel in SLPIN, IMU down. Both would equally stop
+    // the reboot, and this one says what it means.
+    //
+    // It does not cost the reflash route the watchdog exists for. That route
+    // needs firmware alive enough to answer a 1200-baud BOOTSEL handshake, and
+    // the SDK services `tud_task()` from a low-priority IRQ rather than from
+    // the main loop -- so USB keeps running through the spin below whatever
+    // this core is doing. The watchdog's actual quarry is a clock-gating
+    // mistake that parks the core in WFE with USB's clocks gated too, which is
+    // a different failure and is still covered: this only disarms it once the
+    // device has decided to be off.
+    watchdog_disable();
+
     // The latch. R4 pulls T1's base down, Q3 opens, the rail collapses in
     // ~50 us. This is the only place outside latchPower() at main() line 1
     // that may write GPIO15, and the two can never race: latchPower() runs
@@ -69,6 +98,11 @@ void PowerButton::shutdown(St7789_1in69& lcd, Cst816& touch, Qmi8658& imu,
     // frame, forever. Spin here instead, so "off" is honest until the cable
     // comes out. Design spec section 5 step 8 and docs/power-and-time.md
     // section 6.3 both specify this loop.
+    //
+    // "Until the cable comes out" is only true because of the watchdog_disable()
+    // above. Without it this loop is not a resting place at all -- it is an 8 s
+    // fuse on a reboot, and the reboot re-latches power. Do not add anything
+    // here that re-arms the watchdog.
     sleep_ms(50);
     while (true) tight_loop_contents();
 }
