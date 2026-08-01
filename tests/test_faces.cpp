@@ -1816,7 +1816,13 @@ TEST_CASE("every settings row's value fits its column and clears the clip") {
             CHECK(x1 <= h0::safe::X + h0::safe::W);
             // Section 8 caps the value column at 9 characters against the 13 px
             // gutter that "BLANK AT" leaves. Assert the cap, not just the rules.
-            CHECK(w <= 80);
+            // CAL's AUTO position (Task 5) is a deliberate, single exception:
+            // "AUTO 4.19v" is 10 characters, 89 px -- and the x0/x1 checks above
+            // already prove it clears the selection window and the safe box with
+            // margin to spare, so the cap widens only for the one row that needs
+            // it rather than loosening the invariant for everybody.
+            const int16_t cap = (id == h0::RowId::Cal && i == 0) ? 89 : 80;
+            CHECK(w <= cap);
         }
     }
     }
@@ -1859,6 +1865,27 @@ TEST_CASE("power face: the release prompt") {
     Panel fb;
     h0::PowerFace::renderAt(fb, h0::PowerAction::PromptRelease, 255);
     checkGolden(fb, "power@release");
+}
+
+TEST_CASE("the CAL row says whether the gauge is calibrating itself") {
+    // The marker IS the warning: hand-setting CAL disables automatic
+    // calibration, and nothing else on screen would say so.
+    h0::Settings s;
+    s.batCalPermille = 1000;
+
+    h0::BatteryReading bat;
+    bat.valid = true;
+    bat.rawMilliVolts = 3700;
+
+    char buf[24];
+
+    s.batCalAuto = 1;
+    h0::SettingsFace::formatValue(h0::RowId::Cal, 0, s, bat, buf, sizeof(buf));
+    CHECK(std::string(buf) == "AUTO 3.70v");
+
+    s.batCalAuto = 0;
+    h0::SettingsFace::formatValue(h0::RowId::Cal, 0, s, bat, buf, sizeof(buf));
+    CHECK(std::string(buf) == "3.70v MAN");
 }
 
 

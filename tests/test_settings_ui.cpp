@@ -227,3 +227,48 @@ TEST_CASE("a gesture reported on the release read is still honoured") {
     g.onTouch(true, false, false, 1000);
     CHECK(g.onTouch(false, true, false, 1100));
 }
+
+TEST_CASE("the CAL wheel puts AUTO at index 0") {
+    h0::Settings s;
+    s.batCalAuto = 1;
+    CHECK(h0::ladderIndex(h0::RowId::Cal, s) == 0);
+
+    s.batCalAuto = 0;
+    s.batCalPermille = 850;
+    CHECK(h0::ladderIndex(h0::RowId::Cal, s) == 1);
+    s.batCalPermille = 1000;
+    CHECK(h0::ladderIndex(h0::RowId::Cal, s) == 76);
+}
+
+TEST_CASE("leaving AUTO keeps the learned gain instead of jumping to the bottom") {
+    // The wheel derives its index from Settings on every drag, so the FIRST
+    // step off AUTO only has to switch to manual -- the next drag then starts
+    // from the learned value's index. Without this, one step off AUTO would
+    // land on 850 and need a 150-position drag back.
+    h0::Settings s;
+    s.batCalAuto = 1;
+    s.batCalPermille = 1052; // what auto learned
+
+    h0::applyLadder(h0::RowId::Cal, 1, s);
+    CHECK(s.batCalAuto == 0);
+    CHECK(s.batCalPermille == 1052); // unchanged by the transition
+
+    // And now the wheel is positioned at that value, so ordinary steps work.
+    const uint8_t at = h0::ladderIndex(h0::RowId::Cal, s);
+    CHECK(at == 102);
+    h0::applyLadder(h0::RowId::Cal, static_cast<uint8_t>(at + 1), s);
+    CHECK(s.batCalPermille == 1054);
+}
+
+TEST_CASE("returning to AUTO re-arms automatic calibration") {
+    h0::Settings s;
+    s.batCalAuto = 0;
+    s.batCalPermille = 1052;
+    h0::applyLadder(h0::RowId::Cal, 0, s);
+    CHECK(s.batCalAuto == 1);
+    CHECK(s.batCalPermille == 1052); // the gain itself is untouched
+}
+
+TEST_CASE("the CAL wheel has one more position than it has gains") {
+    CHECK(h0::ladderSize(h0::RowId::Cal) == 152);
+}

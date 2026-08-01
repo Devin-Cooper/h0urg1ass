@@ -14,7 +14,10 @@ constexpr uint16_t kOffAt[]   = {120, 300, 600, 1800, 0}; // 0 = never, and it i
 constexpr uint16_t kAlarm[]   = {15, 30, 60, 120, 300};
 
 constexpr uint8_t kThemeCount = static_cast<uint8_t>(ThemeId::Count);
-constexpr uint8_t kCalCount = static_cast<uint8_t>((kCalMax - kCalMin) / 2 + 1); // 151
+// One AUTO position plus the 151 gains. AUTO is index 0 so that the row reads
+// as "automatic, or pick a number", and so that the numeric range keeps its
+// natural order.
+constexpr uint8_t kCalCount = static_cast<uint8_t>((kCalMax - kCalMin) / 2 + 2); // 152
 
 template <typename T, uint8_t N>
 uint8_t nearestIndex(const T (&table)[N], T value) {
@@ -88,7 +91,10 @@ uint8_t ladderIndex(RowId id, const Settings& s) {
         case RowId::OffAt:    return nearestIndex(kOffAt, s.offAfterS);
         case RowId::Alarm:    return nearestIndex(kAlarm, s.alarmS);
         case RowId::Sound:    return s.mute;
-        case RowId::Cal:      return static_cast<uint8_t>((s.batCalPermille - kCalMin) / 2);
+        case RowId::Cal:
+            return s.batCalAuto
+                       ? 0
+                       : static_cast<uint8_t>((s.batCalPermille - kCalMin) / 2 + 1);
         case RowId::Defaults: return 0; // always rests on KEEP
         case RowId::Battery:
         case RowId::Count:    break;
@@ -111,7 +117,23 @@ void applyLadder(RowId id, uint8_t index, Settings& s) {
         case RowId::Alarm:   s.alarmS = entry(kAlarm, index); break;
         case RowId::Sound:   s.mute = index; break;
         case RowId::Cal:
-            s.batCalPermille = static_cast<uint16_t>(kCalMin + index * 2);
+            if (index == 0) {
+                // Re-arm. The gain itself is left alone; the next charge
+                // plateau will overwrite it.
+                s.batCalAuto = 1;
+                break;
+            }
+            if (s.batCalAuto) {
+                // Leaving AUTO. The index the wheel landed on is discarded
+                // exactly once, here, so that hand-tuning starts from the gain
+                // auto already learned rather than from 850. The wheel reads
+                // its position back out of Settings on every drag, so the next
+                // step continues from the learned value's index -- see
+                // app/settings_ui.cpp's onDrag.
+                s.batCalAuto = 0;
+                break;
+            }
+            s.batCalPermille = static_cast<uint16_t>(kCalMin + (index - 1) * 2);
             break;
         case RowId::Defaults:
             // Selecting RESET applies defaults LIVE, so the user watches it

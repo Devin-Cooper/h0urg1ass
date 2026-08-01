@@ -126,9 +126,19 @@ void SettingsFace::formatValue(RowId id, uint8_t index, const Settings& s,
                 // is an implementation detail nobody can check against anything.
                 // Two decimals, and only here: the number is used relatively, so
                 // the resolution is legitimate (section 9.1).
+                //
+                // AUTO shows the live voltage the learned gain produces, so what
+                // automatic calibration has chosen is visible rather than an
+                // opaque mode. MAN is the warning that hand-setting the wheel
+                // switched automatic off; nothing else on screen would say so.
                 const uint16_t mv = applyCal(bat.rawMilliVolts, s.batCalPermille);
-                std::snprintf(out, n, "%u.%02uv", static_cast<unsigned>(mv / 1000),
-                              static_cast<unsigned>((mv / 10) % 100));
+                const unsigned whole = static_cast<unsigned>(mv / 1000);
+                const unsigned frac = static_cast<unsigned>((mv / 10) % 100);
+                if (s.batCalAuto) {
+                    std::snprintf(out, n, "AUTO %u.%02uv", whole, frac);
+                } else {
+                    std::snprintf(out, n, "%u.%02uv MAN", whole, frac);
+                }
             }
             return;
         case RowId::Defaults: // handled by ladderLabel above
