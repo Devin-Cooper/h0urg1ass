@@ -580,20 +580,34 @@ int main() {
         // and that same stale value drove both the bucket and the CAL row that
         // calibration exists to be trusted against.
         //
-        // Read the gain from `eff` so the CAL row previews live while the
-        // wheel is dragged, but persist into the COMMITTED settings: `eff` is
-        // the settings menu's uncommitted preview, and its contract is that
-        // only the swipe commits.
-        const board::BatteryUpdate batteryUpdate = battery.sample(now, eff);
+        // `sessionSettings`, NOT `eff`. The learners inside sample() compare
+        // against the stored gain and the stored floor, and `eff` is the
+        // settings menu's preview -- a snapshot taken at open() that only a
+        // drag ever mutates. Feeding them that froze BatteryFloor's reference
+        // for the whole menu session, so with an unlearned floor (the shipping
+        // state) every single sample re-qualified and committed: a write every
+        // second, 4 kB of sector filled in 16 s, and then SettingsStore's
+        // forced inline eraseSector -- a ~400 ms interrupt-masked stall --
+        // over and over. That is precisely the hazard settings_store.hpp's
+        // deferred-erase design exists to prevent.
+        //
+        // The CAL row's live preview is untouched: SettingsFace::formatValue
+        // re-derives its own voltage from bat.rawMilliVolts and the PREVIEWED
+        // s.batCalPermille, so dragging the wheel still moves the number.
+        // What does change is the BATTERY row's bucket, which now follows the
+        // committed gain rather than the preview -- the more honest reading
+        // anyway, since the bucket is a claim about the pack and not about
+        // what the wheel is currently resting on.
+        const board::BatteryUpdate batteryUpdate = battery.sample(now, sessionSettings);
         batteryReading = batteryUpdate.reading;
         if (batteryUpdate.newCalPermille != 0 || batteryUpdate.newFloorRawMv != 0) {
             // Update sessionSettings itself and commit THAT -- not a separate
             // copy of settingsStore.settings() -- for the same reason every
             // other commit path in this file keeps the two in lockstep (see
-            // sessionSettings's own declaration comment above). `eff` aliases
-            // sessionSettings whenever the menu is closed, so the next sample
-            // re-reads whatever sessionSettings.batFloorRawMv holds; leaving
-            // it stale here would mean that reference never advances, the
+            // sessionSettings's own declaration comment above). sample() reads
+            // sessionSettings, so the next sample re-reads whatever
+            // sessionSettings.batFloorRawMv holds; leaving it stale here would
+            // mean that reference never advances, the
             // `rawMv + kStepMv <= storedRaw` deadband in BatteryFloor::update
             // would keep being satisfied, and this block would commit every
             // second instead of once -- exactly the write-spam
