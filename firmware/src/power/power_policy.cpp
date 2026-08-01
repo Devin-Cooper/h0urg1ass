@@ -90,6 +90,10 @@ PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
         // so this route has never once fired on a real device.
         const uint16_t cutoff =
             BatteryFloor::cutoffMv(s.batFloorRawMv, s.batCalPermille);
+        // Belt and braces: cutoffMv already returns 0 when unlearned, and
+        // milliVolts < 0 would be false anyway after unsigned promotion, so
+        // this check is redundant. It stays so the disarm is visible where
+        // the decision is made, not inferred from integer promotion.
         if (in.battery.valid && cutoff != 0 && in.battery.milliVolts < cutoff) {
             if (in.onUsb) return {PowerAction::None, 0};
             return {PowerAction::PowerOff, 0};
