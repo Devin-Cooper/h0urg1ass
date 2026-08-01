@@ -1780,6 +1780,42 @@ TEST_CASE("settings face: the battery row, calibrated") {
     checkGolden(fb, "settings@battery");
 }
 
+TEST_CASE("settings face: the CAL row, automatic") {
+    // The AUTO/MAN marker is the only warning anywhere on screen that
+    // hand-setting CAL has switched automatic calibration off, so it needs
+    // its own render-level regression coverage, not just formatValue() called
+    // directly. This is also the near-full-width case: raw 4190 mV at the
+    // default 1000 permille prints "AUTO 4.19v", 89 of the value column's
+    // 90 px, the tightest string this row can produce.
+    Panel fb;
+    h0::SettingsUi ui;
+    h0::Settings s = h0::kDefaults; // batCalAuto == 1
+    ui.open(s);
+    for (uint8_t i = 0; i < h0::rowCount() && ui.currentRow() != h0::RowId::Cal; ++i) {
+        nextRow(ui);
+    }
+    REQUIRE(ui.currentRow() == h0::RowId::Cal);
+    h0::BatteryReading bat{4190, 4190, false, false, true};
+    h0::SettingsFace::renderAt(fb, ui, bat);
+    checkGolden(fb, "settings@cal-auto");
+}
+
+TEST_CASE("settings face: the CAL row, hand-set") {
+    Panel fb;
+    h0::SettingsUi ui;
+    h0::Settings s = h0::kDefaults;
+    s.batCalAuto = 0;
+    s.batCalPermille = 1052; // an arbitrary learned-then-hand-tuned gain
+    ui.open(s);
+    for (uint8_t i = 0; i < h0::rowCount() && ui.currentRow() != h0::RowId::Cal; ++i) {
+        nextRow(ui);
+    }
+    REQUIRE(ui.currentRow() == h0::RowId::Cal);
+    h0::BatteryReading bat{3700, 3700, false, false, true};
+    h0::SettingsFace::renderAt(fb, ui, bat);
+    checkGolden(fb, "settings@cal-man");
+}
+
 TEST_CASE("settings face: mid-drag on the value column") {
     Panel fb;
     h0::SettingsUi ui;
@@ -1821,6 +1857,10 @@ TEST_CASE("every settings row's value fits its column and clears the clip") {
             // already prove it clears the selection window and the safe box with
             // margin to spare, so the cap widens only for the one row that needs
             // it rather than loosening the invariant for everybody.
+            // 89 px against COL_HALF*2 = 90: the real clipping bounds checked
+            // above still have margin to spare, but the NOMINAL column budget
+            // is down to its last pixel -- there is no room left for this
+            // string to grow.
             const int16_t cap = (id == h0::RowId::Cal && i == 0) ? 89 : 80;
             CHECK(w <= cap);
         }
@@ -1886,6 +1926,28 @@ TEST_CASE("the CAL row says whether the gauge is calibrating itself") {
     s.batCalAuto = 0;
     h0::SettingsFace::formatValue(h0::RowId::Cal, 0, s, bat, buf, sizeof(buf));
     CHECK(std::string(buf) == "3.70v MAN");
+}
+
+TEST_CASE("CAL shows AT LIMIT at both ends of the range, not just past them") {
+    // <= and >=, not < and >: the boundary values themselves already mean
+    // "no headroom left", not one step short of it. This had no assertion at
+    // all before Task 5 -- and the round-trip sweep that used to reach
+    // kCalMin by accident (its old i=0 iteration landed exactly on it) no
+    // longer does, now that every CAL iteration starts from kDefaults'
+    // mid-range permille. So it is asserted directly instead of incidentally.
+    h0::Settings s = h0::kDefaults;
+    h0::BatteryReading bat;
+    bat.valid = true;
+    bat.rawMilliVolts = 3700;
+    char buf[24];
+
+    s.batCalPermille = h0::kCalMin;
+    h0::SettingsFace::formatValue(h0::RowId::Cal, 0, s, bat, buf, sizeof(buf));
+    CHECK(std::string(buf) == "AT LIMIT");
+
+    s.batCalPermille = h0::kCalMax;
+    h0::SettingsFace::formatValue(h0::RowId::Cal, 0, s, bat, buf, sizeof(buf));
+    CHECK(std::string(buf) == "AT LIMIT");
 }
 
 

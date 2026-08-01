@@ -76,18 +76,30 @@ TEST_CASE("every ladder round-trips value to index and back") {
         // persistent "reset" state for it to report.
         if (id == RowId::Defaults) continue;
 
-        // CAL is deliberately not round-trippable either, for a related reason
-        // (Task 5): starting from batCalAuto == 1 (kDefaults), applying ANY
-        // nonzero index is "leave AUTO", which discards the index and just
-        // clears the flag -- the gain it lands on is whatever AUTO last
-        // learned, not kCalMin + (index-1)*2. See
-        // "leaving AUTO keeps the learned gain instead of jumping to the
-        // bottom" in test_settings_ui.cpp for the transition pinned from a
-        // non-default starting gain, where it really does round-trip.
-        if (id == RowId::Cal) continue;
-
         for (uint8_t i = 0; i < n; ++i) {
             Settings s = h0::kDefaults;
+
+            if (id == RowId::Cal) {
+                // AUTO (index 0) is like DEFAULTS: an ACTION, not a value.
+                // Selecting it re-arms automatic calibration and leaves
+                // batCalPermille wherever it already was, so there is no
+                // persistent value for it to round-trip through -- checking
+                // ladderIndex == 0 here would be trivially true no matter
+                // what the gain field held, which is not what this loop is
+                // for. See "leaving AUTO keeps the learned gain instead of
+                // jumping to the bottom" in test_settings_ui.cpp for the real
+                // AUTO/MAN transition.
+                if (i == 0) continue;
+                // Every nonzero index round-trips through its permille
+                // exactly like any other ladder, PROVIDED the wheel is
+                // already off AUTO -- starting from batCalAuto == 1
+                // (kDefaults' value) would instead take the "leave AUTO"
+                // branch, which discards the index. Clearing it here is what
+                // exercises the index<->permille formula itself, all 151
+                // manual positions of it, kCalMin through kCalMax.
+                s.batCalAuto = 0;
+            }
+
             h0::applyLadder(id, i, s);
             h0::clamp(s);
             CHECK(h0::ladderIndex(id, s) == i);
