@@ -83,13 +83,32 @@ PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
     // so these routes can never actually act there, and re-announcing that
     // every offAfterS would relight the screen forever for no reason.
     if (!in.timerRunning && !in.alarmSounding) {
-        // The cutoff is DERIVED, not fixed, and zero means "no floor learned
-        // yet, so there is nothing to act on". That gate used to be
-        // `battery.calibrated`, which in practice was never true -- the gain
-        // stayed at its 1000 default because calibrating it needed a meter --
-        // so this route has never once fired on a real device.
+        // The cutoff is DERIVED, not fixed, and zero means "no floor has
+        // survived a power cycle yet, so there is nothing to act on". That gate
+        // used to be `battery.calibrated`, which in practice was never true --
+        // the gain stayed at its 1000 default because calibrating it needed a
+        // meter -- so this route has never once fired on a real device.
+        //
+        // `in.armedFloorRawMv`, NEVER `s.batFloorRawMv`, and that is
+        // load-bearing. cutoffMv() is applyCal(floor) + kMarginMv, which is by
+        // construction ABOVE the reading that produced the floor -- for every
+        // possible floor, so no threshold tuning can make it otherwise.
+        // BatteryFloor tracks below 3700 mV and its first qualifying sample
+        // writes a floor immediately, so arming on the live value would power
+        // the device off in the same frame the floor first appeared, at
+        // ~3.70 V, and end the very descent that is supposed to reach brownout.
+        // Nor does it self-correct: the next boot would arm at the clamped
+        // 3750 mV ceiling, power off at 3749, and never again get below 3700 to
+        // learn anything. A floor learned during THIS descent must not arm the
+        // cutoff that ends it; only one that survived a power cycle may, which
+        // is what makes "the first run to empty IS the learning run" true.
+        // main.cpp snapshots it once at boot and never reassigns it.
+        //
+        // The GAIN still comes from `s`, live: a better gain can only move a
+        // cutoff that already exists, never conjure one, so there is nothing
+        // here for it to short-circuit.
         const uint16_t cutoff =
-            BatteryFloor::cutoffMv(s.batFloorRawMv, s.batCalPermille);
+            BatteryFloor::cutoffMv(in.armedFloorRawMv, s.batCalPermille);
         // Belt and braces: cutoffMv already returns 0 when unlearned, and
         // milliVolts < 0 would be false anyway after unsigned promotion, so
         // this check is redundant. It stays so the disarm is visible where

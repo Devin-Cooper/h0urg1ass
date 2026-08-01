@@ -340,6 +340,22 @@ int main() {
     static h0::SettingsStore settingsStore(flashStore);
     settingsStore.load();
 
+    // The learned floor AS IT WAS AT BOOT. Read once, here, and NEVER
+    // reassigned -- this is the only thing allowed to arm the low-battery
+    // cutoff.
+    //
+    // BatteryFloor::cutoffMv is applyCal(floor) + 250 mV, which is by
+    // construction above the reading that produced the floor. So a floor
+    // learned during the CURRENT descent, if it were allowed to arm, would
+    // power the device off in the same frame it first appeared -- ending the
+    // very run to brownout that the floor learner exists to observe, and
+    // leaving the device permanently stuck at the clamped 3750 mV ceiling
+    // afterwards because it can never again get low enough to learn. Only a
+    // floor that survived a power cycle may arm the cutoff. If you are tempted
+    // to "fix" this by reading settingsStore.settings() or sessionSettings at
+    // the call site below, that is the bug, not the fix.
+    const uint16_t bootFloorRawMv = settingsStore.settings().batFloorRawMv;
+
     {
         const h0::BatteryReading b =
             battery.sample(time_us_64(), settingsStore.settings()).reading;
@@ -929,6 +945,10 @@ int main() {
             pin.blanked = !rendering;
             pin.onUsb = stdio_usb_connected();
             pin.battery = batteryReading;
+            // The BOOT snapshot, deliberately -- see bootFloorRawMv's
+            // declaration. A floor learned during this descent must not arm
+            // the cutoff that would end it.
+            pin.armedFloorRawMv = bootFloorRawMv;
             powerDecision = powerPolicy.update(pin, eff);
         }
 

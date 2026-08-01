@@ -58,6 +58,13 @@ public:
     /// The armed cutoff in CORRECTED mV, or 0 when no floor has been learned --
     /// which is what leaves the low-battery route disabled until the first
     /// run to empty has taught it something.
+    ///
+    /// `storedRaw` must be a floor that SURVIVED A POWER CYCLE, never one
+    /// learned during the current descent. The returned cutoff is always above
+    /// the reading that produced the floor, so arming on a fresh one would end
+    /// the run that is supposed to reach brownout -- see PowerPolicy::update,
+    /// which takes it from `PowerInput::armedFloorRawMv` for exactly this
+    /// reason.
     static uint16_t cutoffMv(uint16_t storedRaw, uint16_t permille);
 };
 

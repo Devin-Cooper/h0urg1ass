@@ -12,7 +12,10 @@ namespace {
 constexpr uint64_t MS = 1'000ull;
 constexpr uint64_t SEC = 1'000'000ull;
 
-/// A device on battery, awake, nothing running, healthy calibrated cell.
+/// A device on battery, awake, nothing running, healthy cell.
+///
+/// No armed floor: that is the shipping state, and it is what keeps the
+/// low-battery route out of every test that is not about it.
 PowerInput idleInput(uint64_t now) {
     PowerInput in;
     in.now = now;
@@ -22,7 +25,6 @@ PowerInput idleInput(uint64_t now) {
     in.blanked = false;
     in.onUsb = false;
     in.battery.valid = true;
-    in.battery.calibrated = true;
     in.battery.milliVolts = 3900;
     return in;
 }
@@ -186,6 +188,11 @@ TEST_CASE("on USB the automatic routes stay silent, and the button path says so"
     PowerPolicy q;
     PowerInput flat = idleInput(10 * SEC);
     flat.onUsb = true;
+    // An ARMED floor, or this assertion proves nothing: with the shipping
+    // default of none, cutoffMv() returns 0, the route is disabled outright,
+    // and None would come back whatever the onUsb branch did. 3380 raw at
+    // unity gain arms at 3630, so 3400 is genuinely under it.
+    flat.armedFloorRawMv = 3380;
     flat.battery.milliVolts = 3400;
     CHECK(q.update(flat, s).action == PowerAction::None);
 
@@ -282,24 +289,58 @@ TEST_CASE("a flat battery does not power off until a floor has been learned") {
     // and the route stays disabled -- which is exactly today's behaviour.
     h0::PowerPolicy p;
     h0::Settings s;
-    s.batFloorRawMv = 0;
 
     h0::PowerInput in;
     in.now = 10'000'000ull;
+    in.armedFloorRawMv = 0;
     in.battery.valid = true;
     in.battery.milliVolts = 3000; // far below any plausible cutoff
 
     CHECK(p.update(in, s).action == h0::PowerAction::None);
 }
 
-TEST_CASE("a learned floor arms the cutoff") {
+TEST_CASE("a floor learned during this descent does not arm the cutoff that would end it") {
+    // THE LEARNING RUN, and this is the only test that pins it. cutoffMv() is
+    // applyCal(floor) + 250 mV, which is above the reading that produced the
+    // floor FOR EVERY POSSIBLE FLOOR -- so if the live Settings value armed
+    // the route, the first sample below 3700 mV would write a floor and power
+    // the device off in the same frame, at ~3.70 V. The descent that the floor
+    // learner exists to observe would never reach brownout, and the next boot
+    // would arm at the clamped 3750 mV ceiling and never get low enough to
+    // learn again.
     h0::PowerPolicy p;
     h0::Settings s;
-    s.batFloorRawMv = 3380;
+    s.batFloorRawMv = 3650;   // just learned, this session, still descending
+    s.batCalPermille = 1000;
+
+    h0::PowerInput in;
+    in.now = 10'000'000ull;
+    in.armedFloorRawMv = 0;   // nothing survived a power cycle yet
+    in.battery.valid = true;
+    in.battery.milliVolts = 3650; // the very reading that produced the floor
+
+    CHECK(p.update(in, s).action == h0::PowerAction::None);
+
+    // And it stays silent all the way down to the brownout it is meant to
+    // reach, not merely for the frame the floor landed in.
+    for (uint16_t mv = 3650; mv >= 3400; mv = static_cast<uint16_t>(mv - 10)) {
+        s.batFloorRawMv = mv;
+        in.battery.milliVolts = mv;
+        CHECK(p.update(in, s).action == h0::PowerAction::None);
+    }
+}
+
+TEST_CASE("a floor that survived a power cycle arms the cutoff") {
+    // The other half: the boot snapshot, which is what main.cpp passes. Same
+    // floor value as the test above, and the opposite outcome -- the ONLY
+    // difference being that this one came back out of flash.
+    h0::PowerPolicy p;
+    h0::Settings s;
     s.batCalPermille = 1000; // cutoff = 3380 + 250 = 3630
 
     h0::PowerInput in;
     in.now = 10'000'000ull;
+    in.armedFloorRawMv = 3380;
     in.battery.valid = true;
 
     in.battery.milliVolts = 3700;
@@ -309,13 +350,34 @@ TEST_CASE("a learned floor arms the cutoff") {
     CHECK(p.update(in, s).action == h0::PowerAction::PowerOff);
 }
 
-TEST_CASE("the armed cutoff is silent on USB, like the other automatic routes") {
+TEST_CASE("the armed cutoff still follows the gain, which is read live") {
+    // The floor is frozen at boot; the GAIN is not. A gain learned this
+    // session moves an already-armed cutoff, which is safe -- a better gain
+    // can only move a cutoff that exists, never conjure one.
     h0::PowerPolicy p;
     h0::Settings s;
-    s.batFloorRawMv = 3380;
 
     h0::PowerInput in;
     in.now = 10'000'000ull;
+    in.armedFloorRawMv = 3200;
+    in.battery.valid = true;
+    in.battery.milliVolts = 3500;
+
+    s.batCalPermille = 1000; // cutoff = 3200 + 250 = 3450
+    CHECK(p.update(in, s).action == h0::PowerAction::None);
+
+    h0::PowerPolicy q;
+    s.batCalPermille = 1052; // 3200 raw -> 3366 corrected, cutoff 3616
+    CHECK(q.update(in, s).action == h0::PowerAction::PowerOff);
+}
+
+TEST_CASE("the armed cutoff is silent on USB, like the other automatic routes") {
+    h0::PowerPolicy p;
+    h0::Settings s;
+
+    h0::PowerInput in;
+    in.now = 10'000'000ull;
+    in.armedFloorRawMv = 3380;
     in.onUsb = true;
     in.battery.valid = true;
     in.battery.milliVolts = 3000;

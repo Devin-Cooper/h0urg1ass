@@ -32,6 +32,12 @@ struct PowerInput {
     bool blanked = false;    ///< the backlight ladder's third step
     bool onUsb = false;
     BatteryReading battery;
+    /// `Settings::batFloorRawMv` AS IT WAS AT BOOT, in RAW mV. 0 = no floor has
+    /// survived a power cycle yet, which leaves the low-battery route disabled.
+    ///
+    /// Deliberately NOT read from the live `Settings` handed to update(): see
+    /// the comment at its only use, which is the whole reason this field exists.
+    uint16_t armedFloorRawMv = 0;
 };
 
 /// Every power-off threshold in one testable place.
