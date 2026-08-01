@@ -30,6 +30,16 @@ void clamp(Settings& s) {
     if (s.mute > 1) s.mute = 0;
     s.batCalPermille = clampTo<uint16_t>(s.batCalPermille, kCalMin, kCalMax);
     if (s.offAfterS > 3600) s.offAfterS = 300;
+
+    if (s.batCalAuto > 1) s.batCalAuto = 1;
+
+    // A floor outside what a cell can physically read is a corrupt record, and
+    // the honest recovery is "not learned" rather than a wrong cutoff. The
+    // cutoff derivation clamps too, but that would silently accept nonsense as
+    // a measurement.
+    if (s.batFloorRawMv != 0 && (s.batFloorRawMv < 2500 || s.batFloorRawMv > 4400)) {
+        s.batFloorRawMv = 0;
+    }
 }
 
 bool operator==(const Settings& a, const Settings& b) {
@@ -37,7 +47,8 @@ bool operator==(const Settings& a, const Settings& b) {
            a.backlightActive == b.backlightActive && a.backlightDim == b.backlightDim &&
            a.dimAfterS == b.dimAfterS && a.blankAfterS == b.blankAfterS &&
            a.alarmS == b.alarmS && a.mute == b.mute &&
-           a.batCalPermille == b.batCalPermille && a.offAfterS == b.offAfterS;
+           a.batCalPermille == b.batCalPermille && a.offAfterS == b.offAfterS &&
+           a.batCalAuto == b.batCalAuto && a.batFloorRawMv == b.batFloorRawMv;
 }
 
 } // namespace h0

@@ -173,3 +173,43 @@ TEST_CASE("a short record truncating mid-byte leaves later fields at defaults") 
     CHECK(out.alarmS == h0::kDefaults.alarmS); // absent
     CHECK(out.mute == h0::kDefaults.mute); // absent
 }
+
+TEST_CASE("the new calibration fields survive a round trip") {
+    h0::Settings s;
+    s.batCalAuto = 0;
+    s.batFloorRawMv = 3380;
+
+    uint8_t rec[h0::kRecordBytes];
+    h0::encodeRecord(s, 7, rec);
+
+    h0::Settings out;
+    uint32_t seq = 0;
+    REQUIRE(h0::decodeRecord(rec, seq, out));
+    CHECK(out.batCalAuto == 0);
+    CHECK(out.batFloorRawMv == 3380);
+}
+
+TEST_CASE("a record written before these fields existed decodes to their defaults") {
+    // THE MIGRATION STORY, and the only test that pins it. The format is
+    // append-only and length-guarded; a 16-byte record is what every device
+    // already in the field has.
+    h0::Settings s;
+    s.batCalPermille = 1032;
+    uint8_t rec[h0::kRecordBytes];
+    h0::encodeRecord(s, 3, rec);
+
+    // Rewrite the length as the OLD kSettingsBytes and re-CRC, which is
+    // byte-for-byte what an older build produced.
+    rec[8] = 16;
+    rec[9] = 0;
+    const uint16_t crc = h0::recordCrc(rec);
+    rec[10] = static_cast<uint8_t>(crc & 0xFF);
+    rec[11] = static_cast<uint8_t>(crc >> 8);
+
+    h0::Settings out;
+    uint32_t seq = 0;
+    REQUIRE(h0::decodeRecord(rec, seq, out));
+    CHECK(out.batCalPermille == 1032);      // the old field still reads
+    CHECK(out.batCalAuto == 1);             // and the new ones default
+    CHECK(out.batFloorRawMv == 0);
+}

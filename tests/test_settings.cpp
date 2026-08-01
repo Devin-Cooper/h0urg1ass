@@ -140,3 +140,27 @@ TEST_CASE("the theme constants are what the arithmetic says") {
     CHECK(h0::themeFor(h0::ThemeId::Night).ink == rgb565(255, 32, 0));
     CHECK(h0::themeFor(h0::ThemeId::Night).paper == rgb565(0, 0, 0));
 }
+
+TEST_CASE("automatic calibration is armed by default and the floor is unlearned") {
+    // Both defaults are load-bearing. Auto must be on or no unit ever
+    // calibrates; the floor must be 0 or the cutoff arms against a number
+    // nothing measured.
+    CHECK(h0::kDefaults.batCalAuto == 1);
+    CHECK(h0::kDefaults.batFloorRawMv == 0);
+}
+
+TEST_CASE("clamp rejects a nonsense auto flag and an impossible floor") {
+    h0::Settings s;
+    s.batCalAuto = 7;
+    s.batFloorRawMv = 60000; // no cell reads this; a corrupt record
+    h0::clamp(s);
+    CHECK(s.batCalAuto == 1);
+    CHECK(s.batFloorRawMv == 0); // back to "not learned", not to a wrong floor
+}
+
+TEST_CASE("clamp keeps a plausible floor") {
+    h0::Settings s;
+    s.batFloorRawMv = 3380;
+    h0::clamp(s);
+    CHECK(s.batFloorRawMv == 3380);
+}

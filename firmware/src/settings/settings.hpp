@@ -30,6 +30,8 @@ struct Settings {
     uint8_t  mute = 0;
     uint16_t batCalPermille = 1000; ///< 1000 = never calibrated
     uint16_t offAfterS = 300;       ///< 0 = never; idle auto-off, section 9's 5 minutes
+    uint8_t  batCalAuto = 1;        ///< 1 = automatic calibration armed; cleared by hand-setting CAL
+    uint16_t batFloorRawMv = 0;     ///< learned floor, RAW mV; 0 = never learned
 };
 
 inline constexpr Settings kDefaults{};
