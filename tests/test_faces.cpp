@@ -539,10 +539,21 @@ TEST_CASE("every flap cell carries both colours, whatever is behind it") {
     // cell that is uniformly one colour is unreadable, regardless of why.
     //
     // Both legs matter. Upright, no cell inverts and this is the old guarantee
-    // restated against the composited panel. Packed against the ceiling, every
-    // cell inverts and the same bound has to hold of the complement -- which is
-    // where an inversion that flipped the glyph but not its background, or the
+    // restated against the composited panel. Packed against the ceiling, cells
+    // invert and the same bound has to hold of the complement -- which is where
+    // an inversion that flipped the glyph but not its background, or the
     // background but not the glyph, would show up as a solid block.
+    //
+    // MOST of the board inverts on the second leg, not all of it, and that is
+    // a measured property of the sand rather than a hedge. Sand driven at the
+    // ceiling settles into a MOUND, not a slab: at the 2000-grain top tier the
+    // chamber is a little over half full, so the heap spans the full width at
+    // the ceiling and tapers away below it. The 2x board is wide enough to
+    // reach past the mound's shoulders -- the three middle cells sit under
+    // 82-100% coverage and the two outer ones under 28-31%. At 1x the board was
+    // 105 px and sat entirely inside the cone, which is why this leg used to
+    // bury all five.
+    constexpr int kBuried = 3;
     onebit::init();
     for (int leg = 0; leg < 2; ++leg) {
         h0::TimerModel t;
@@ -576,9 +587,17 @@ TEST_CASE("every flap cell carries both colours, whatever is behind it") {
         // inverting -- the sand configuration is the test fixture here, and a
         // fixture that stops producing the state under test takes the assertion
         // with it while staying green.
+        //
+        // Counted rather than merely observed, so "most of the board inverts"
+        // is a number the fixture has to keep hitting and not a single stray
+        // cell somewhere in 60 samples.
+        int buried = 0;
+        for (int c = 0; c < 5; ++c) if (face.cellCovered(c)) ++buried;
         CAPTURE(leg);
+        CAPTURE(buried);
         CHECK(sawInverted == (leg == 1));
-        CHECK(sawUpright == (leg == 0));
+        CHECK(sawUpright); // both legs still have upright cells to bound
+        CHECK(buried == (leg ? kBuried : 0));
     }
 }
 
@@ -719,7 +738,7 @@ TEST_CASE("a readout whose scratch buffer could not be allocated goes blank, not
         t.start(0);
         h0::TimerFace face; // its scratch is the allocation being refused
         face.restart(t, 11u);
-        face.setGravity(h0::Gravity::N); // bury the board: every cell wants inverting
+        face.setGravity(h0::Gravity::N); // bury the board: the middle cells want inverting
 
         Panel fb; // 8,400 bytes -- a different size, so this one succeeds
         uint64_t now = 0;
@@ -743,13 +762,20 @@ TEST_CASE("a readout whose scratch buffer could not be allocated goes blank, not
     // FIXTURE INTEGRITY, both halves, because either one failing quietly makes
     // the assertions above pass against anything. The scratch has to have been
     // refused exactly once -- not zero times, and not more, which would mean
-    // the size collided with some other buffer -- and the cells have to be on
-    // the COVERED branch, since the uncovered branch never fills black and
-    // could not produce a slab in the first place.
+    // the size collided with some other buffer -- and cells have to be on the
+    // COVERED branch, since the uncovered branch never fills black and could
+    // not produce a slab in the first place.
+    //
+    // THREE cells, not five. Sand driven at the ceiling settles into a mound
+    // rather than a slab, and the 2x board is wide enough to reach past its
+    // shoulders -- see "every flap cell carries both colours" for the measured
+    // profile. Three covered cells is three chances to paint a black slab, and
+    // the two uncovered ones are the Copy branch, which is checked here too:
+    // every one of the five is asserted blank above.
     CAPTURE(denied);
     CAPTURE(covered);
     CHECK(denied == 1);
-    CHECK(covered == 5);
+    CHECK(covered == 3);
 }
 
 TEST_CASE("the lintel interior is empty in the wall grid, so sand cannot enter it") {
@@ -1116,6 +1142,20 @@ TEST_CASE("the flap stays in motion across consecutive frames, not just one") {
     REQUIRE(face.boardChar(4) == '5');
     REQUIRE_FALSE(face.boardFlipping()); // settled, so the count below starts clean
 
+    // The window is the BOARD's own box, taken from the face, not the old
+    // lintel interior. The board is 170 px wide now and the lintel interior was
+    // 114, so CARD_* clips the seconds cells -- the only ones that flap once a
+    // second -- down to a 7 px strip, and the motion count collapsed from 15
+    // frames to 5 while the animation itself was untouched. A window that
+    // measures somewhere other than where the thing moves is not a looser test,
+    // it is a different one.
+    const h0::Rect16 first = face.cellRect(0);
+    const h0::Rect16 last = face.cellRect(4);
+    const int16_t BOARD_X = first.x;
+    const int16_t BOARD_Y = first.y;
+    const int16_t BOARD_W = static_cast<int16_t>(last.x + last.w - first.x);
+    const int16_t BOARD_H = first.h;
+
     constexpr uint64_t kFrame = 33'333ull;
     int flipFrames = 0, best = 0, movedFrames = 0;
     Panel prev, cur;
@@ -1128,7 +1168,7 @@ TEST_CASE("the flap stays in motion across consecutive frames, not just one") {
             // Mid-flip frames must also LOOK different from their predecessor.
             // `isFlipping` is the board's own bookkeeping; this is the pixels a
             // person would actually see move.
-            if (diff(prev, cur, CARD_X, CARD_Y, CARD_W, CARD_H, true) > 0) ++movedFrames;
+            if (diff(prev, cur, BOARD_X, BOARD_Y, BOARD_W, BOARD_H, true) > 0) ++movedFrames;
         } else {
             flipFrames = 0;
         }

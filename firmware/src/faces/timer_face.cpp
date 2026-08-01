@@ -21,24 +21,55 @@ namespace {
 
 // ------------------------------------------------------------ the board --
 
-constexpr int16_t kCols = 5;   // M M : S S
-constexpr int16_t kCellW = 21; // 13 px glyph + 4 px each side
-constexpr int16_t kCellH = 34; // 26 px glyph + 4 px top and bottom
-constexpr int16_t kBoardW = kCols * kCellW; // 105
+constexpr int16_t kCols = 5; // M M : S S
+
+/// The flap font's own raster. Named rather than left as bare 13s and 26s
+/// scattered through the file, because every dimension below is DERIVED from it
+/// and the derivation is what has to stay true when the scale changes -- a
+/// literal that happened to be right at 1x is silently wrong at 2x.
+constexpr int16_t kGlyphW = 13;
+constexpr int16_t kGlyphH = 26;
+static_assert(onebit::fonts::FLAP_13X26.glyph_width == kGlyphW &&
+                  onebit::fonts::FLAP_13X26.glyph_height == kGlyphH,
+              "the font stopped being 13x26 and every cell dimension below is derived from it");
+
+/// Integer magnification of the GLYPH. The cell, its border and its split line
+/// are not scaled by the library -- they are the housing the cards travel
+/// behind -- so the cell is sized here to match.
+///
+/// A 13x26 readout is legible but small on a 240x280 panel, and the whole
+/// point of taking the housing out of the wall grid was to afford this: at 1x
+/// the board was confined to a 114 px lintel interior, and a 2x board is 170 px
+/// wide.
+constexpr int16_t kScale = 2;
+
+constexpr int16_t kMargin = 8; ///< total, so 4 px each side at any scale
+constexpr int16_t kCellW = kGlyphW * kScale + kMargin; // 34
+constexpr int16_t kCellH = kGlyphH * kScale + kMargin; // 60
+constexpr int16_t kBoardW = kCols * kCellW;            // 170
+
+// The library CLAMPS scale down to what the cell holds, silently -- that is its
+// documented contract, not an error -- so a cell too small for kScale would not
+// fail to build, it would quietly render at 1x inside a 2x board. This is the
+// same arithmetic the constructor does, done where it can still be a build
+// error.
+static_assert(kCellW / kGlyphW >= kScale && kCellH / kGlyphH >= kScale,
+              "the cell is too small for kScale and the library would silently downgrade it");
+
+// The cell height must stay EVEN. The mechanical hinge sits at
+// (kGlyphH / 2) * kScale below the glyph's top edge, while the decorative split
+// line sits at kCellH / 2; both floors truncate, and an odd cell height moves
+// one and not the other, so the falling card lands a row off the line it is
+// supposed to land on.
+static_assert(kCellH % 2 == 0, "an odd cell height desynchronises the hinge from the split line");
 
 /// The separator is the middle cell, and it is drawn by hand rather than being
 /// a flap cell. See kSequence below: a colon in the flap cycle is a colon every
 /// digit cell must pass THROUGH on a wrap.
 constexpr int16_t kSepCol = 2;
 
-/// Seated inside the lintel: 4 px in from the left jamb, 2 px down from the
-/// ceiling. The interior is 114 x 50, so this leaves a 5 px right gutter and a
-/// 14 px band underneath for the state label.
-constexpr int16_t kBoardX = sandgeom::LINTEL_IN_X + 4; // 68
-constexpr int16_t kBoardY = sandgeom::LINTEL_IN_Y + 2; // 20
-
-/// The same origin in PANEL-local pixels, which is the space the board is
-/// actually drawn in.
+/// Where the board sits inside the panel, in PANEL-local pixels -- which is the
+/// space the board is actually drawn in.
 ///
 /// The widget positions its cells from `SplitFlapConfig::bounds`, and those
 /// bounds used to be screen coordinates because the board was drawn straight
@@ -48,8 +79,20 @@ constexpr int16_t kBoardY = sandgeom::LINTEL_IN_Y + 2; // 20
 /// converts back. Get this offset wrong and the whole readout lands in the wrong
 /// place, or is silently cropped by the scratch's edge; the asserts below are
 /// the tripwire for the second, which is the quiet one.
-constexpr int16_t kBoardLX = kBoardX - sandgeom::PANEL_X; // 39
-constexpr int16_t kBoardLY = kBoardY - sandgeom::PANEL_Y; // 2
+///
+/// Horizontally centred: 170 of the panel's 182 px, so 6 px of gutter each side.
+/// Vertically the panel's 92 px are spent
+///
+///     2 rail + 2 pad + 60 cell + 4 gap + 18 label + 4 pad + 2 rail
+///
+/// which puts the board 4 px down from the panel's top edge.
+constexpr int16_t kBoardLX = (sandgeom::PANEL_W - kBoardW) / 2; // 6
+constexpr int16_t kBoardLY = 4;
+
+/// The same origin on the screen, which is what `cellRect()` and the coverage
+/// maths speak.
+constexpr int16_t kBoardX = sandgeom::PANEL_X + kBoardLX; // 35
+constexpr int16_t kBoardY = sandgeom::PANEL_Y + kBoardLY; // 22
 
 static_assert(kBoardLX >= 0 && kBoardLX + kBoardW <= sandgeom::PANEL_W,
               "the board must fit the panel-local scratch it is drawn into");
@@ -62,16 +105,24 @@ static_assert(kBoardLY >= 0 && kBoardLY + kCellH <= sandgeom::PANEL_H,
 static_assert(kBoardX >= sandgeom::ORIGIN_X && kBoardY >= sandgeom::ORIGIN_Y,
               "the board must lie inside the sand grid for the coverage maths to hold");
 
-static_assert(kBoardX >= sandgeom::LINTEL_IN_X, "board must sit inside its housing");
-static_assert(kBoardX + kBoardW <= sandgeom::LINTEL_IN_X + sandgeom::LINTEL_IN_W,
+// The housing is the PANEL now, not the lintel. Bounding the board against the
+// lintel would be bounding it against a rect nothing draws any more -- and one
+// this board no longer fits inside, which is the whole reason the lintel had to
+// stop being a wall.
+static_assert(kBoardX >= sandgeom::PANEL_X, "board must sit inside its housing");
+static_assert(kBoardX + kBoardW <= sandgeom::PANEL_X + sandgeom::PANEL_W,
               "board must sit inside its housing");
-static_assert(kBoardY + kCellH <= sandgeom::LINTEL_IN_Y + sandgeom::LINTEL_IN_H,
+static_assert(kBoardY + kCellH <= sandgeom::PANEL_Y + sandgeom::PANEL_H,
               "board must sit inside its housing");
 
+/// The state label, also at kScale: a 6x9 caption under a 26x52 glyph reads as
+/// an afterthought rather than as part of the readout.
+constexpr int16_t kLabelH = 9 * kScale; // TERM_6X9, magnified
+
 /// Where the state label sits, under the board and still inside the housing.
-constexpr int16_t kLabelY = kBoardY + kCellH + 4; // 58
-static_assert(kLabelY + 9 <= sandgeom::LINTEL_IN_Y + sandgeom::LINTEL_IN_H,
-              "the label must not spill out from under the soffit");
+constexpr int16_t kLabelY = kBoardY + kCellH + 4; // 86
+static_assert(kLabelY + kLabelH + 2 <= sandgeom::PANEL_Y + sandgeom::PANEL_H,
+              "the label must not spill out through the panel's bottom rail");
 
 /// Descending, digits only, and NO separator. See the header -- an ascending or
 /// alphanumeric sequence makes every countdown tick cost 39 flaps.
@@ -110,6 +161,7 @@ constexpr uint32_t kMsPerFlap = 500;
 onebit::SplitFlapConfig baseConfig(int16_t col0, int16_t cols) {
     onebit::SplitFlapConfig cfg;
     cfg.font = &onebit::fonts::FLAP_13X26;
+    cfg.scale = kScale;
     cfg.cell_width = kCellW;
     cfg.cell_height = kCellH;
     cfg.cols = cols;
@@ -134,9 +186,10 @@ onebit::SplitFlapConfig makeConfig(int16_t col0, int16_t cols, const char* seq,
     return cfg;
 }
 
-/// MM:SS. The board has five cells and cannot grow -- `FLAP_13X26` is a fixed
-/// raster with no scale factor -- so 99:59 is the ceiling. The dial is capped to
-/// match, which makes the clamp below unreachable rather than merely unlikely.
+/// MM:SS. The board has five cells and cannot grow -- at kScale the five are
+/// already 170 px of a 182 px panel, and a sixth would need 204 -- so 99:59 is
+/// the ceiling. The dial is capped to match, which makes the clamp below
+/// unreachable rather than merely unlikely.
 void formatMMSS(uint32_t totalSeconds, char* out, size_t n) {
     const uint32_t m = totalSeconds / 60;
     const uint32_t s = totalSeconds % 60;
@@ -152,9 +205,19 @@ void formatMMSS(uint32_t totalSeconds, char* out, size_t n) {
 /// large charge (the attractor only moves so many grains per tick) and long
 /// ones look steppy on a small one.
 ///
-/// The top tier is 2000 rather than 3000 because the lintel takes a fifth of
-/// the upper chamber. Measured capacity with it in place is 2188 placed, so
-/// this keeps a real margin against silent truncation.
+/// The top tier is 2000 for a reason that has now expired, and is left at 2000
+/// deliberately anyway. It was 2000 because the lintel was a WALL and took a
+/// fifth of the upper chamber: measured capacity with it in place was 2188
+/// placed, so 2000 was the largest tier with a real margin against silent
+/// truncation. The lintel is out of the wall grid now and capacity is 3722, so
+/// the constraint is gone -- but raising the tier is a change to where every
+/// grain lands, and doing it here would mix that diff into the housing's. It is
+/// its own change.
+///
+/// One consequence is visible and worth knowing about: at 2000 the chamber is a
+/// little over half full, so sand piled against the ceiling is a mound rather
+/// than a slab, and the 2x board is wide enough that its outer two cells sit
+/// past the mound's shoulders. The polarity gauge reads across the middle three.
 int chargeFor(uint64_t durationUs) {
     const uint64_t s = durationUs / 1'000'000ull;
     if (s <= 60) return 400;
@@ -162,9 +225,51 @@ int chargeFor(uint64_t durationUs) {
     return 2000;
 }
 
+/// `drawBitmapText` magnified by an integer factor.
+///
+/// The library has no scaled text call -- `drawBitmapText` takes no scale and
+/// only `blit` does -- so this stamps glyph by glyph through the scaled blit,
+/// which is exactly what `SplitFlapDisplay::renderCharInCell` does for a
+/// resting card. Doing it that way rather than through a magnified scratch
+/// buffer means there is no allocation to fail: the readout's own scratch
+/// already has to be guarded for that, and this needs no second guard.
+///
+/// Advance and out-of-range handling mirror `drawBitmapText` exactly, scaled:
+/// glyph width plus one pixel of spacing, and a character the font does not
+/// have still takes its space. Ink composes with Or, so paper is transparent --
+/// again the same as `drawBitmapText` with a BLACK colour.
+void drawScaledText(onebit::IFramebuffer& fb, const onebit::BitmapFont& font,
+                    int16_t x, int16_t y, const char* text, int16_t scale) {
+    int16_t cursor = x;
+    for (const char* p = text; *p; ++p) {
+        const uint8_t ch = static_cast<uint8_t>(*p);
+        int16_t advance = font.glyph_width;
+        if (ch >= font.first_char && ch <= font.last_char) {
+            const onebit::BitmapGlyph& g = font.glyphs[ch - font.first_char];
+            if (font.glyph_width == 0) advance = static_cast<int16_t>(g.width);
+            onebit::blit(fb, cursor, y,
+                         onebit::BitmapView::tight(g.data, g.width, g.height),
+                         onebit::Rect{0, 0, static_cast<int16_t>(g.width),
+                                      static_cast<int16_t>(g.height)},
+                         scale, scale, onebit::RasterOp::Or);
+        }
+        cursor = static_cast<int16_t>(cursor + (advance + 1) * scale);
+    }
+}
+
+/// The magnified width of `text`, matching drawScaledText's advance.
+int16_t scaledTextWidth(const onebit::BitmapFont& font, const char* text, int16_t scale) {
+    return static_cast<int16_t>(onebit::getBitmapTextWidth(font, text) * scale);
+}
+
 /// Draw the separator cell exactly as the library draws a flap cell -- 1 px
 /// outline, centre split line, centred glyph -- so it is indistinguishable from
 /// its neighbours. It just never moves.
+///
+/// The colon has to be magnified along with everything else, and by the same
+/// centring arithmetic `renderCharInCell` uses, or the one cell the library
+/// does not draw would be the one cell that looks wrong: a 13x26 colon adrift
+/// in a 34x60 box between two 26x52 digits.
 ///
 /// Draws in PANEL-LOCAL coordinates, like the flap units it sits between: `fb`
 /// here is the scratch, not the frame.
@@ -174,10 +279,11 @@ void drawSeparator(onebit::IFramebuffer& fb) {
     onebit::drawLine(fb, px, static_cast<int16_t>(kBoardLY + kCellH / 2),
                      static_cast<int16_t>(px + kCellW - 1),
                      static_cast<int16_t>(kBoardLY + kCellH / 2), BLACK);
-    const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::FLAP_13X26, ":");
-    onebit::drawBitmapText(fb, onebit::fonts::FLAP_13X26,
-                           static_cast<int16_t>(px + (kCellW - w) / 2),
-                           static_cast<int16_t>(kBoardLY + (kCellH - 26) / 2), ":", BLACK);
+    const int16_t w = scaledTextWidth(onebit::fonts::FLAP_13X26, ":", kScale);
+    drawScaledText(fb, onebit::fonts::FLAP_13X26,
+                   static_cast<int16_t>(px + (kCellW - w) / 2),
+                   static_cast<int16_t>(kBoardLY + (kCellH - kGlyphH * kScale) / 2), ":",
+                   kScale);
 }
 
 /// Coverage above which a cell inverts, and below which it reverts.
@@ -427,9 +533,19 @@ void TimerFace::render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t n
         case TimerModel::State::Expired: label = "DONE"; break;
     }
     if (label) {
-        const int16_t w = onebit::getBitmapTextWidth(onebit::fonts::TERM_6X9, label);
-        onebit::drawBitmapText(fb, onebit::fonts::TERM_6X9,
-                               static_cast<int16_t>(120 - w / 2), kLabelY, label, BLACK);
+        // Centred on x = 120, which is the panel's centre line as well as the
+        // screen's: PANEL_X 29 + PANEL_W / 2 91 = 120. The widest label,
+        // "PAUSED", is 82 px at kScale against 182 px of panel, so it never
+        // reaches the rails.
+        //
+        // Normal polarity, deliberately. The label is panel chrome, not a flap
+        // cell: it sits below the board, outside every cellRect, so it is not
+        // stamped with the cells and does not invert with them. Inverting it
+        // would put the one piece of text that says what the timer is DOING on
+        // ground that shifts with the sand level.
+        const int16_t w = scaledTextWidth(onebit::fonts::TERM_6X9, label, kScale);
+        drawScaledText(fb, onebit::fonts::TERM_6X9,
+                       static_cast<int16_t>(120 - w / 2), kLabelY, label, kScale);
     }
 
     // A muted buzzer is otherwise discoverable only by the absence of a sound,
