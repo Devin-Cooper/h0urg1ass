@@ -571,14 +571,31 @@ int main() {
         const board::BatteryUpdate batteryUpdate = battery.sample(now, eff);
         batteryReading = batteryUpdate.reading;
         if (batteryUpdate.newCalPermille != 0 || batteryUpdate.newFloorRawMv != 0) {
-            h0::Settings persisted = settingsStore.settings();
+            // Update sessionSettings itself and commit THAT -- not a separate
+            // copy of settingsStore.settings() -- for the same reason every
+            // other commit path in this file keeps the two in lockstep (see
+            // sessionSettings's own declaration comment above). `eff` aliases
+            // sessionSettings whenever the menu is closed, so the next sample
+            // re-reads whatever sessionSettings.batFloorRawMv holds; leaving
+            // it stale here would mean that reference never advances, the
+            // `rawMv + kStepMv <= storedRaw` deadband in BatteryFloor::update
+            // would keep being satisfied, and this block would commit every
+            // second instead of once -- exactly the write-spam
+            // battery_floor.hpp's "the whole learning burst happens once"
+            // comment and SettingsStore's one-write-per-session wear budget
+            // assume can't happen. Committing settingsStore.settings()
+            // directly, as before, left sessionSettings holding the pre-learn
+            // values permanently, which both feeds that stale comparison AND
+            // means the next unrelated menu-open-and-swipe (SettingsUi::open
+            // snapshots from `eff`, i.e. sessionSettings) silently writes the
+            // pre-learn gain and floor back over the learned ones.
             if (batteryUpdate.newCalPermille != 0) {
-                persisted.batCalPermille = batteryUpdate.newCalPermille;
+                sessionSettings.batCalPermille = batteryUpdate.newCalPermille;
             }
             if (batteryUpdate.newFloorRawMv != 0) {
-                persisted.batFloorRawMv = batteryUpdate.newFloorRawMv;
+                sessionSettings.batFloorRawMv = batteryUpdate.newFloorRawMv;
             }
-            settingsStore.commit(persisted);
+            settingsStore.commit(sessionSettings);
         }
 
         h0::Vec3 raw{};
