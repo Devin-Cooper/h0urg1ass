@@ -31,12 +31,21 @@ namespace {
 constexpr uint64_t SEC = 1'000'000ull;
 using Panel = onebit::Framebuffer<240, 280>;
 
-/// The lintel interior -- the readout's home, and the region the whole design
-/// exists to keep clear of sand.
-constexpr int16_t CARD_X = h0::sandgeom::LINTEL_IN_X;
-constexpr int16_t CARD_Y = h0::sandgeom::LINTEL_IN_Y;
-constexpr int16_t CARD_W = h0::sandgeom::LINTEL_IN_W;
-constexpr int16_t CARD_H = h0::sandgeom::LINTEL_IN_H;
+/// The panel INTERIOR -- inside the border rail, which is the region the readout
+/// has to itself.
+///
+/// It replaces the old CARD_* block, which named the lintel interior. That rect
+/// meant something when the lintel was a wall: it was the region sand could not
+/// reach. It means nothing now -- it is a sub-rect of the panel with no edge and
+/// no owner -- so the tests that measured against it measure against this.
+///
+/// The border is excluded deliberately. A scan window that includes the rail
+/// finds ink on all four sides no matter what, so an ink bounding box taken over
+/// it is the window itself and could never notice anything.
+constexpr int16_t CARD_X = h0::sandgeom::PANEL_X + 1;
+constexpr int16_t CARD_Y = h0::sandgeom::PANEL_Y + 1;
+constexpr int16_t CARD_W = h0::sandgeom::PANEL_W - 2;
+constexpr int16_t CARD_H = h0::sandgeom::PANEL_H - 2;
 
 /// Count ink pixels. The cheap invariant behind most of these tests: sand that
 /// appears or vanishes is a conservation bug, and a blank face is a silent
@@ -778,58 +787,37 @@ TEST_CASE("a readout whose scratch buffer could not be allocated goes blank, not
     CHECK(covered == 3);
 }
 
-TEST_CASE("the lintel interior is empty in the wall grid, so sand cannot enter it") {
-    // This is the whole design. Not a statistic about where grains happen to
-    // land -- the interior is simply not a place a grain can be, because the
-    // housing is solid to the physics. If this fails, the lintel failed to
-    // reach `open_` (or `shut_`) and the readout is drawing on black sand.
-    const h0::Gravity dirs[8] = {h0::Gravity::S,  h0::Gravity::SW, h0::Gravity::W,
-                                 h0::Gravity::NW, h0::Gravity::N,  h0::Gravity::NE,
-                                 h0::Gravity::E,  h0::Gravity::SE};
-    for (int grains : {400, 900, 2000}) {
-        for (int d = 0; d < 8; ++d) {
-            h0::SandVessel v;
-            v.begin();
-            v.reset(0xC0FFEEu, grains);
-            v.setGravity(dirs[d]);
-            for (int i = 0; i < 400; ++i) {
-                v.tick(1.0f - static_cast<float>(i) / 400.0f);
-                int inside = 0;
-                for (int cy = h0::sandgeom::LINTEL_CY0; cy <= h0::sandgeom::LINTEL_CY1; ++cy)
-                    for (int cx = h0::sandgeom::LINTEL_CX0; cx <= h0::sandgeom::LINTEL_CX1; ++cx)
-                        if (v.sand().get(cx, cy)) ++inside;
-                if (inside != 0) { CAPTURE(grains); CAPTURE(d); CAPTURE(i); REQUIRE(inside == 0); }
-            }
-        }
-    }
-}
-
-TEST_CASE("a sand-only render leaves the card white, with no help from the face") {
-    // The corollary of the wall trick, and the one that catches `walls()` being
-    // switched back to the physics grid: that would paint the housing solid
-    // black -- 5,700 px of it -- which is exactly the black-on-black failure the
-    // design exists to prevent, arriving as a one-line change.
-    for (int grains : {400, 900, 2000}) {
-        h0::SandVessel v;
-        v.begin();
-        v.reset(7u, grains);
-        for (int i = 0; i < 600; ++i) {
-            v.tick(1.0f - static_cast<float>(i) / 600.0f);
-            if (i % 60) continue;
-            Panel fb;
-            fb.clear(WHITE);
-            h0::renderSand(fb, v.sand(), v.walls());
-            CAPTURE(grains);
-            CAPTURE(i);
-            REQUIRE(inkInRect(fb, CARD_X, CARD_Y, CARD_W, CARD_H) == 0);
-        }
-    }
-}
+// The two guarantees that used to live here are gone, and both were deleted
+// deliberately rather than allowed to rot:
+//
+//   * "the lintel interior is empty in the wall grid, so sand cannot enter it"
+//     is now ACTIVELY FALSE. The lintel is not a wall; sand filling that region
+//     is the change, not a defect. Its successor is the pair of opacity tests
+//     above, which assert the panel's pixels are what they would be with no
+//     sand at all -- the same legibility claim, bought with compositing rather
+//     than with physics.
+//
+//   * "a sand-only render leaves the card white, with no help from the face"
+//     is false at 2000 grains for exactly the same reason. Worth recording that
+//     its other two legs were ALREADY VACUOUS before this change: the 900-grain
+//     heap tops out around row 32 and the lintel was rows 1-26, so no grain ever
+//     came within a cell of it at 400 or 900. It was one live assertion and two
+//     that could not fail.
 
 TEST_CASE("what the card shows does not depend on where the sand is") {
-    // The property stated directly: two runs of the same timer, showing the same
-    // time, but with the sand driven into completely different configurations.
-    // Inside the card they must be pixel-identical.
+    // RESTATED for per-cell polarity, and the restatement is the point.
+    //
+    // The old form asserted the card was pixel-identical whatever the sand was
+    // doing. That is false on purpose now: a cell whose sand is behind it is
+    // stamped inverted, so two runs showing the same time at different sand
+    // levels differ by thousands of pixels inside the readout. Measured on this
+    // fixture at the moment the old form was retired: 4,692.
+    //
+    // What survives is weaker in form and stronger in content. The sand cannot
+    // change WHAT the readout says, or WHERE anything on it sits -- only which
+    // way up a cell is drawn. So: equal characters, and every cell either
+    // pixel-identical or the exact complement. Never a blend, which is what a
+    // leak of sand into the panel would actually look like.
     h0::TimerModel t;
     t.setDuration(300 * SEC);
     t.start(0);
@@ -848,9 +836,49 @@ TEST_CASE("what the card shows does not depend on where the sand is") {
     a.render(fa, t, 60 * SEC);
     b.render(fb2, t, 60 * SEC);
 
-    CHECK(diff(fa, fb2, CARD_X, CARD_Y, CARD_W, CARD_H, true) == 0);
-    // ...and the sand really was somewhere different, or the test proves nothing.
-    CHECK(diff(fa, fb2, CARD_X, CARD_Y, CARD_W, CARD_H, false) > 500);
+    // The content, which is sand-independent.
+    for (int c = 0; c < h0::TimerFace::kCells; ++c) {
+        CAPTURE(c);
+        CHECK(a.boardChar(static_cast<int16_t>(c)) == b.boardChar(static_cast<int16_t>(c)));
+    }
+
+    // The presentation, which is sand-dependent but only in one specific way.
+    int identical = 0, complementary = 0;
+    for (int c = 0; c < h0::TimerFace::kCells; ++c) {
+        const h0::Rect16 r = a.cellRect(c);
+        const int same = diff(fa, fb2, r.x, r.y, r.w, r.h, true);
+        const int flipped = complementIn(fa, fb2, r.x, r.y, r.w, r.h);
+        CAPTURE(c);
+        CAPTURE(same);
+        CAPTURE(flipped);
+        CHECK((same == 0 || flipped == 0));
+        if (same == 0) ++identical;
+        if (flipped == 0) ++complementary;
+    }
+
+    // FIXTURE INTEGRITY. `same == 0` for all five cells satisfies the loop above
+    // perfectly well, and that is what a dead polarity latch looks like -- so the
+    // disjunction has to be shown taking BOTH branches or it is only asserting
+    // the half that was going to hold anyway. Measured on this fixture: cells 0
+    // and 4 identical, cells 1-3 exactly complementary, 2,040 px each (34 x 60).
+    CAPTURE(identical);
+    CAPTURE(complementary);
+    CHECK(identical == 2);
+    CHECK(complementary == 3);
+
+    // FIXTURE INTEGRITY, and without it the loop above is a statement about
+    // nothing: two identical frames satisfy `same == 0` for every cell. The sand
+    // has to actually have differed BEHIND the panel.
+    const int behind = cellDiff(a.sand(), b.sand(), h0::sandgeom::PANEL_CX0,
+                                h0::sandgeom::PANEL_CY0, h0::sandgeom::PANEL_CX1,
+                                h0::sandgeom::PANEL_CY1);
+    CAPTURE(behind);
+    CHECK(behind > 100);
+
+    // ...and visibly so outside it too, which is the leg the old form already
+    // had and which still says the two fixtures were driven apart at all.
+    CHECK(diff(fa, fb2, h0::sandgeom::PANEL_X, h0::sandgeom::PANEL_Y, h0::sandgeom::PANEL_W,
+               h0::sandgeom::PANEL_H, false) > 500);
 }
 
 TEST_CASE("the composite is sand everywhere outside the housing") {
@@ -868,16 +896,20 @@ TEST_CASE("the composite is sand everywhere outside the housing") {
     Panel composed;
     face.render(composed, t, 40 * SEC);
 
-    // Compare outside the lintel entirely: inside it the composite has the
-    // board and the label, and the sand-only frame does not.
+    // The reference frame is the vessel and nothing else. It used to have the
+    // lintel outline drawn into it, because the face's own wall grid carried it;
+    // that grid no longer does, so drawing it here would be reproducing a
+    // structure nothing renders any more.
     Panel bare;
     bare.clear(WHITE);
-    h0::SandGrid drawn = h0::makeVessel(h0::SandVessel::kHoleHalf);
-    h0::drawLintelOutline(drawn);
+    const h0::SandGrid drawn = h0::makeVessel(h0::SandVessel::kHoleHalf);
     h0::renderSand(bare, face.sand(), drawn);
 
-    CHECK(diff(composed, bare, h0::sandgeom::LINTEL_X, h0::sandgeom::LINTEL_Y,
-               h0::sandgeom::LINTEL_W, h0::sandgeom::LINTEL_H, false) == 0);
+    // Compare outside the PANEL entirely -- the housing is the panel now. Inside
+    // it the composite has an opaque readout and the sand-only frame has sand,
+    // and that difference is the whole design rather than a defect.
+    CHECK(diff(composed, bare, h0::sandgeom::PANEL_X, h0::sandgeom::PANEL_Y,
+               h0::sandgeom::PANEL_W, h0::sandgeom::PANEL_H, false) == 0);
 }
 
 // ------------------------------------------------------------- the drain --
@@ -890,6 +922,11 @@ TEST_CASE("a flip in progress never erases sand outside the housing") {
     // past the card's own cell would punch a white hole in the sand once per
     // flap. It is clipped today; this pins it, because it is a property of code
     // this repo does not own and cannot see change.
+    //
+    // The board is drawn into a panel-sized scratch now, so that white clear
+    // cannot physically reach the frame -- but the stamp that follows it can,
+    // and this is what says the stamp stays inside the housing. Retargeted from
+    // the lintel to the panel with the rest of them.
     h0::TimerModel t;
     t.setDuration(300 * SEC);
     t.start(0);
@@ -908,13 +945,12 @@ TEST_CASE("a flip in progress never erases sand outside the housing") {
 
         Panel bare;
         bare.clear(WHITE);
-        h0::SandGrid drawn = h0::makeVessel(h0::SandVessel::kHoleHalf);
-        h0::drawLintelOutline(drawn);
+        const h0::SandGrid drawn = h0::makeVessel(h0::SandVessel::kHoleHalf);
         h0::renderSand(bare, face.sand(), drawn);
 
         CAPTURE(i);
-        REQUIRE(diff(composed, bare, h0::sandgeom::LINTEL_X, h0::sandgeom::LINTEL_Y,
-                     h0::sandgeom::LINTEL_W, h0::sandgeom::LINTEL_H, false) == 0);
+        REQUIRE(diff(composed, bare, h0::sandgeom::PANEL_X, h0::sandgeom::PANEL_Y,
+                     h0::sandgeom::PANEL_W, h0::sandgeom::PANEL_H, false) == 0);
     }
 }
 
@@ -955,25 +991,84 @@ TEST_CASE("the upper chamber actually empties") {
     }
 }
 
-TEST_CASE("short timers never reach the lintel at all") {
-    // The lintel costs the sand nothing below three minutes: the charge is not
-    // tall enough to reach it, so the volume it occupies was empty anyway. This
-    // is why every timer up to three minutes behaves exactly as it did before
-    // the readout moved into the chamber.
+TEST_CASE("short timers never reach the rows the lintel used to wall off") {
+    // Same measurement as before this change, opposite rationale -- and the old
+    // one would now mislead, so it is restated rather than left to rot. It read
+    // "the lintel costs the sand nothing below three minutes", an argument about
+    // an obstacle. There is no obstacle: those rows are ordinary chamber now and
+    // a grain is free to sit in any of them.
+    //
+    // What the same numbers say instead is why the timer goldens moved only in
+    // the readout. The golden fixture is 120 s -> 900 grains, and at 900 the
+    // heap is not tall enough to reach these rows -- so taking the wall out
+    // changed the geometry of a region no grain was going to occupy anyway, and
+    // the sand pixels came out bit-identical. That is a fact about the CHARGE,
+    // not about the housing, which is exactly why it survives the housing
+    // ceasing to exist.
     for (int grains : {400, 900}) {
         h0::SandVessel v;
         v.begin();
         v.reset(42u, grains);
         CAPTURE(grains);
-        CHECK(v.charge() == grains); // nothing truncated by the obstacle
+        CHECK(v.charge() == grains);
         CHECK(v.sand().countRows(h0::sandgeom::LINTEL_CY0, h0::sandgeom::LINTEL_CY1) == 0);
     }
 
-    // The top tier does reach it, and must still fit with margin to spare.
+    // The top tier does reach them -- and now that they are open, it has 1,722
+    // grains of headroom rather than 188. See the capacity test below.
     h0::SandVessel big;
     big.begin();
     big.reset(42u, 2000);
     CHECK(big.charge() >= 2000);
+}
+
+TEST_CASE("sand fills behind the panel and can still leave") {
+    // THE REASON THE WHOLE CHANGE EXISTS, and until now nothing in the suite
+    // pinned it.
+    //
+    // A 2x readout kept as a wall places 1,502 grains against a 2,000-grain top
+    // tier -- BELOW the tier, so the longest timers would have been silently
+    // truncated and the only symptom would have been an hourglass that ran out
+    // of sand early. Taking the wall out moves capacity from 2,188 to 3,722.
+    //
+    // Two halves, and both have to hold. Capacity that cannot drain is worse
+    // than capacity that was never there: the timer would finish with a heap
+    // still hanging under the ceiling, in the one region the user cannot see
+    // into because the readout is over it.
+    onebit::init();
+    for (int ask : {2000, 3000}) {
+        // 2000 is the live top tier. 3000 is headroom the tier does not use
+        // yet -- asserted anyway, because it is the margin the whole change was
+        // bought for, and a wall creeping back into that region would take it
+        // away while leaving the tier itself passing.
+        CAPTURE(ask);
+        h0::SandVessel v;
+        v.begin();
+        v.reset(4u, ask);
+        CHECK(v.charge() >= ask);
+
+        // LOAD-BEARING, and measured over the EX-LINTEL rect rather than the
+        // panel rect. The panel is mostly ordinary chamber and always was, so a
+        // `panel > 100` guard is satisfied with the wall in place and rules out
+        // nothing; these rows are the ones that were exactly zero by
+        // construction until this change. Measured at 2000 grains: 1,745 cells
+        // under the panel, of which 531 are here.
+        const int behind =
+            cellsInRect(v.sand(), h0::sandgeom::LINTEL_CX0, h0::sandgeom::LINTEL_CY0,
+                        h0::sandgeom::LINTEL_CX1, h0::sandgeom::LINTEL_CY1);
+        CAPTURE(behind);
+        REQUIRE(behind > 300);
+
+        for (int i = 0; i < 4000; ++i) v.tick(0.0f); // gate wide open: drain flat out
+
+        // Nothing stranded, counted two ways on purpose. Every charged grain
+        // reaching the lower chamber would also be satisfied by a grain that
+        // simply vanished; the upper chamber being empty is the leg that fails
+        // if one hangs where the lintel used to be.
+        CAPTURE(v.charge());
+        CHECK(v.lowerCount() == v.charge());
+        CHECK(v.sand().countRows(0, h0::sandgeom::FLOOR_ROW - 1) == 0);
+    }
 }
 
 TEST_CASE("the drain is visible: the frame changes as the sand falls") {
@@ -1253,12 +1348,42 @@ TEST_CASE("the board spells the time across the whole representable range") {
 }
 
 TEST_CASE("the readout sits inside its housing") {
-    // Pins the board's ink box, which is what makes the knockout exactly sized.
+    // Pins the board's ink box -- and, less obviously, catches sand leaking into
+    // the panel. That second job is the reason this test is scanned the way it
+    // is, and it survived the rewrite for the bigger board on purpose.
+    //
+    // The window is the panel INTERIOR, which is a good deal bigger than the
+    // board: 180 x 90 against 170 x 60, so there are 30 rows below the board and
+    // 5 columns each side of it that must contain no ink at all in the Running
+    // state. The bounding box of whatever ink IS there therefore has to come out
+    // exactly the board's rect. Anything that puts a stray black pixel anywhere
+    // else in the panel -- and a grain showing through is exactly that -- pushes
+    // an edge of the box out and one of the four equalities below fails.
+    //
+    // Two ways to lose that, both of which look like tidying up:
+    //
+    //   * narrowing the window to the board's own rect. The box would then be
+    //     the window by construction and could not move.
+    //   * relaxing the equalities to a containment check (box inside panel).
+    //     Sand fills the panel region from the top down, so leaked grains land
+    //     INSIDE the window and containment stays true while the readout goes
+    //     black-on-black.
+    //
+    // The fixture is chosen so the catcher is armed rather than theoretical:
+    // 300 s is the 2000-grain tier and the face is rendered at charge, when
+    // there really is sand in the rows the board covers. The guard below says
+    // so rather than assuming it.
+    onebit::init();
     h0::TimerModel t;
     t.setDuration(300 * SEC);
     t.start(0);
     h0::TimerFace face;
     face.restart(t, 1u);
+
+    const int behind = cellsInRect(face.sand(), h0::sandgeom::PANEL_CX0, h0::sandgeom::PANEL_CY0,
+                                   h0::sandgeom::PANEL_CX1, h0::sandgeom::PANEL_CY1);
+    CAPTURE(behind);
+    REQUIRE(behind > 100); // there is something for a leak to leak
 
     Panel fb;
     face.render(fb, t, 0);
@@ -1272,14 +1397,14 @@ TEST_CASE("the readout sits inside its housing") {
                 if (x > x1) x1 = x;
                 if (y > y1) y1 = y;
             }
-    // The bounding box is scanned over the card, so comparing it back against the
-    // card would be true by construction -- and would pass on a blank card too.
-    // Assert the measured box instead, and require it to exist at all.
-    REQUIRE(x1 >= 0); // a readout that drew nothing must fail, not pass vacuously
-    CHECK(x0 == 68);  // kBoardX
-    CHECK(y0 == 20);  // kBoardY
-    CHECK(x1 == 172); // kBoardX + 5 * kCellW - 1, cell borders included
-    CHECK(y1 == 53);  // kBoardY + kCellH - 1; Running, so no label band
+    // Assert the MEASURED box, not a relation between the box and the window --
+    // see above. `x1 >= 0` is separate because a readout that drew nothing at all
+    // leaves the box unset, and an unset box must fail rather than pass vacuously.
+    REQUIRE(x1 >= 0);
+    CHECK(x0 == 35);  // kBoardX
+    CHECK(y0 == 22);  // kBoardY
+    CHECK(x1 == 204); // kBoardX + 5 * kCellW - 1, cell borders included
+    CHECK(y1 == 81);  // kBoardY + kCellH - 1; Running, so no label band
 }
 
 // ------------------------------------------------------------ the frame --
