@@ -18,7 +18,7 @@ namespace h0 {
 /// second rect type that would need converting at every library call.
 using Rect16 = onebit::Rect;
 
-/// The timer: a split-flap readout housed in a lintel, over falling sand.
+/// The timer: a split-flap readout on an opaque panel, over falling sand.
 ///
 /// One face, not three. The sand carries the *feel* of the time passing and the
 /// board carries the *number*, and neither can do the other's job: sand alone
@@ -70,8 +70,11 @@ class TimerFace {
 public:
     TimerFace();
 
-    /// Draw sand, then knock out the housing, then the board. `now` is passed
-    /// rather than read so a frame can be rendered off-line at a chosen instant.
+    /// Draw sand, then composite the panel over it, then the board. "Over" is
+    /// literal and not negotiable: renderSand ASSIGNS bytes across the whole
+    /// safe box, so anything drawn before it is annihilated rather than
+    /// overpainted. `now` is passed rather than read so a frame can be rendered
+    /// off-line at a chosen instant.
     void render(onebit::IFramebuffer& fb, const TimerModel& t, uint64_t now);
 
     /// Advance the simulation. Called on its own clock, NOT once per render:
@@ -153,7 +156,9 @@ public:
     }
 
     /// Grid-space accessors. Framebuffer measurements cannot separate stranded
-    /// sand from lintel ink, so the sand invariants are asserted here instead.
+    /// sand from the readout's own ink -- and less than ever now that the panel
+    /// hides a region the sand is expected to occupy -- so the sand invariants
+    /// are asserted here instead.
     const SandGrid& sand() const { return vessel_.sand(); }
     int charge() const { return vessel_.charge(); }
     int lowerCount() const { return vessel_.lowerCount(); }

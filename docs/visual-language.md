@@ -758,7 +758,7 @@ Review        braille goldens; read the diff                          (Section 4
 ## 9. The timer face
 
 There is one face: `h0::TimerFace` (`firmware/src/faces/timer_face.{hpp,cpp}`) — a split-flap MM:SS
-readout housed in a lintel, over a falling-sand simulation. The sand carries the *feel* of the time
+readout on an opaque panel, over a falling-sand simulation. The sand carries the *feel* of the time
 passing and the board carries the *number*; sand alone cannot tell you it is 4:07, and a readout
 alone is a clock.
 
@@ -778,26 +778,61 @@ of that failure — only material above a 45° cone rising from the hole edge ca
 resting grains toward the hole. Measured residual drops to zero with it on. Above about 500‰ the far
 flank is scraped to a film while a mound stacks at the hole, and it stops reading as sand.
 
-**Legibility is solved by physics, not by knockout.** The lintel — the housing the readout sits in —
-is part of the simulation's *wall* grid, so no grain can ever be inside it, and `renderSand` assigns
-bytes rather than or-ing them, so the interior is repainted paper every frame for free. That is
-R11's mandatory halo at no cost; at one bit there is no other way to keep glyphs off sand that does
-not amount to drawing the readout twice. Two details are load-bearing. The lintel hangs from the
-ceiling with no cell above it: any obstacle with free space over it collects a tower of grains the
-attractor can never clear, and the upper chamber then never empties. And the wall grid the *renderer*
-sees is the outline only — jambs and soffit — while the grid the *physics* sees is filled solid;
-handing the solid shape to the renderer paints the housing black, which is precisely the
-black-on-black failure the lintel exists to prevent.
+**Legibility used to be solved by physics; it is now solved by draw order.** It is worth recording
+both, because the change traded a guarantee that could not fail for one that can.
+
+*What it was.* The lintel — the housing the readout sat in — was part of the simulation's *wall*
+grid, so no grain could ever be inside it, and `renderSand` assigns bytes rather than or-ing them,
+so the interior was repainted paper every frame for free. That was R11's mandatory halo at no cost.
+Black glyphs on black sand was not a drawing problem, it was physically impossible. Two details were
+load-bearing: the lintel hung from the ceiling with no cell above it, because any obstacle with free
+space over it collects a tower of grains the attractor can never clear; and the wall grid the
+*renderer* saw was the outline only — jambs and soffit — while the grid the *physics* saw was filled
+solid, since handing the solid shape to the renderer paints the housing black.
+
+*Why it had to go.* A wall costs capacity, and a bigger wall costs more. Measured against the real
+`SandVessel`: the 1x lintel left 2188 placeable grains; a 2x housing kept as a wall leaves **1502**,
+below the 2000-grain top tier, which is silent truncation. There is no version of an enlarged
+readout that stays a wall. With the lintel out of the grid, capacity is **3722**.
+
+*What it is.* The lintel is gone from the wall grid — one grid now describes both what the sand
+collides with and what gets drawn — and sand fills the region behind the readout. The readout is an
+**opaque panel**, 182×92 at x 29..210, y 18..109, composited *after* `renderSand` and *after* the
+expiry `invertSafeBox`. That ordering is the whole mechanism and it is not negotiable: `renderSand`
+assigns across the entire safe box, so a panel drawn first is not overpainted but annihilated. This
+is still R18 — type never sits on a pattern bare — but bought with a solid plate rather than with
+physics. Every pixel inside the panel is the face's responsibility now; an unpainted pixel is no
+longer paper by default, it is sand. The opacity tests are what hold that up, and they were written
+before the wall was touched.
+
+*And the panel became a gauge.* An opaque plate is a white slab punched through the picture of the
+sand, so each of the five flap cells is stamped either straight or as its exact **complement**,
+according to whether sand sits behind it. Coverage is read from the sand *grid*, never from pixels —
+a framebuffer measurement cannot tell a grain from the readout's own ink — and latched with
+hysteresis (invert above 60%, revert below 40%) because grains jitter at a surface and a bare
+threshold makes a cell flicker between polarities on consecutive frames. A covered cell is solid
+white-on-black and an uncovered one solid black-on-white; never a blend, so contrast is total at
+every sand density and §1.4's discrete-objects reading survives. Only the cells invert — border,
+background and state label stay normal polarity, or a full chamber would render the panel as one
+black slab. It cannot be a raster-op swap on the widget: a cell mid-flip writes *white* to occlude
+its falling card, and under Xor that white would read as "show the sand through the card". The board
+is drawn into a panel-sized scratch at normal polarity (2,116 bytes, heap, allocated once) and each
+cell blitted out of it.
 
 **The drain follows the clock, not the physics.** A metered gate at the hole opens only while the
 sand is behind the schedule `TimerModel::fraction()` reports. Charges are sized to the duration —
 400 grains at ≤ 60 s, 900 at ≤ 180 s, 2000 above — because no single charge serves both ends: a
 short timer cannot drain a large charge at the rate the attractor moves grains, and a long one looks
-steppy on a small one. The top tier is 2000 rather than 3000 because the lintel takes a fifth of the
-upper chamber; measured capacity with it in place is 2188 placed, so 2000 keeps real margin against
-silent truncation. The simulation ticks on its own clock at 33.3 ms, never once per render, because
-the drain has to run at a fixed rate whatever the frame rate happens to be. One tick costs about
-4.5 ms on this part — roughly 13% of the CPU at 30 Hz.
+steppy on a small one. The top tier was 2000 rather than 3000 because the lintel took a fifth of the
+upper chamber: capacity with it in place measured 2188 placed, so 2000 was the largest tier with a
+real margin against silent truncation. That constraint has expired — capacity is 3722 now — and the
+tier is left at 2000 deliberately, because raising it moves every grain and that diff belongs to its
+own change rather than mixed into the housing's. One consequence is visible: at 2000 the chamber is
+a little over half full, so sand against the ceiling is a mound rather than a slab, and the 2x board
+is wide enough that its outer two cells sit past the mound's shoulders — the polarity gauge reads
+across the middle three. The simulation ticks on its own clock at 33.3 ms, never once per render,
+because the drain has to run at a fixed rate whatever the frame rate happens to be. One tick costs
+about 4.5 ms on this part — roughly 13% of the CPU at 30 Hz.
 
 **Turning the device over is handled after the fact, not inside the face.** `h0::rotate180` rotates
 the finished frame in place, gravity is negated before it reaches the simulation, and touch

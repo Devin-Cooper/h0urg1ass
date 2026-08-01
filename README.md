@@ -31,12 +31,13 @@ a defaults reset. Edits preview live; a second swipe commits them to flash, and 
 device back up cancels and restores instead of starting the timer. Settings survive a power
 cut.
 
-There is one screen: a split-flap `MM:SS` readout housed in a lintel, over a falling-sand
+There is one screen: a split-flap `MM:SS` readout on an opaque panel, over a falling-sand
 simulation. The board carries the number; the sand carries the feeling of the time passing.
 
-The readout stays legible at one bit because **its housing is a wall in the sand simulation** —
-sand cannot be inside it, so the interior is repainted clean every frame at no cost. Black
-glyphs on black sand is not a drawing problem to solve but a state that cannot occur.
+The readout stays legible at one bit because **the panel is opaque and drawn last** — the sand
+is painted first, then the panel over it, so black glyphs never land on black sand. Sand piles
+up behind the panel, and each flap cell is stamped inverted where it does, which makes the
+readout a coarse fill gauge as well as a clock and keeps its contrast total either way.
 
 The display runs white on black, using the panel's own `INVON`/`INVOFF`. The framebuffer
 convention is untouched: `BLACK` still means ink everywhere in the code.
