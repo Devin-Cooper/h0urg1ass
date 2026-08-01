@@ -67,7 +67,15 @@ uint16_t AutoCal::push(uint16_t rawMv) {
 
     // Refused rather than clamped. A board needing more than this range has a
     // divider or an LDO out of spec, and clamping would call it calibrated.
-    if (permille < kCalMin || permille > kCalMax) return 0;
+    //
+    // <= and >=, matching settings_face.cpp's AT LIMIT test exactly. With
+    // strict < and > this could store precisely 850 or 1150, and the CAL row
+    // would then call the gain out of spec -- while showing neither AUTO nor
+    // MAN, which is the only warning that row carries. The endpoints mean "no
+    // headroom left" either way, so refusing them here is the cheaper side of
+    // the agreement; a hand-set gain may still sit on one, and the row says
+    // AT LIMIT about it, which is the truth.
+    if (permille <= kCalMin || permille >= kCalMax) return 0;
     return static_cast<uint16_t>(permille);
 }
 

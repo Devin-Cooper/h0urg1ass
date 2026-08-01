@@ -1928,6 +1928,32 @@ TEST_CASE("the CAL row says whether the gauge is calibrating itself") {
     CHECK(std::string(buf) == "3.70v MAN");
 }
 
+TEST_CASE("the battery row shows CHARGING before it shows UNCAL") {
+    // The UNCAL gate used to return first, so no device could show CHARGING
+    // until its gain had been anchored -- which is every device for the whole
+    // of the first hardware verification pass. The old ordering's reason was
+    // that `charging` was a 4220 mV threshold an uncalibrated divider could
+    // trip on its own; it is now AutoCal's rise-then-plateau on the RAW
+    // reading, gain-independent by construction, so the reason is gone.
+    h0::Settings s = h0::kDefaults;
+    h0::BatteryReading bat;
+    bat.valid = true;
+    bat.rawMilliVolts = 4000;
+    bat.milliVolts = 4000;
+    bat.calibrated = false;
+    bat.charging = true;
+
+    char buf[24];
+    h0::SettingsFace::formatValue(h0::RowId::Battery, 0, s, bat, buf, sizeof(buf));
+    CHECK(std::string(buf) == "CHARGING");
+
+    // The gate itself still holds when nothing is charging: a bucket read off
+    // a +/-9% gain is uninformative, not merely imprecise.
+    bat.charging = false;
+    h0::SettingsFace::formatValue(h0::RowId::Battery, 0, s, bat, buf, sizeof(buf));
+    CHECK(std::string(buf) == "UNCAL");
+}
+
 TEST_CASE("CAL shows AT LIMIT at both ends of the range, not just past them") {
     // <= and >=, not < and >: the boundary values themselves already mean
     // "no headroom left", not one step short of it. This had no assertion at

@@ -67,6 +67,24 @@ TEST_CASE("a plateau implying an out-of-range gain is refused") {
     CHECK(chargeTo(hi, 5000) == 0); // implies 842, under kCalMin
 }
 
+TEST_CASE("the endpoints of the range are refused too, not merely values past them") {
+    // settings_face.cpp renders <= kCalMin and >= kCalMax as "AT LIMIT". If
+    // AutoCal could store exactly 850 or 1150, the CAL row would call a gain
+    // auto had just chosen out of spec -- and in that state it shows neither
+    // AUTO nor MAN, so the branch's only warning would be lost. The two ends
+    // have to agree, and refusing here is the cheaper side.
+    //
+    // 1000 * 4210 / 3660 = 1150 exactly, and / 4952 = 850 exactly.
+    h0::AutoCal hi, lo;
+    CHECK(chargeTo(hi, 3660) == 0);
+    CHECK(chargeTo(lo, 4952) == 0);
+
+    // ...and one LSB inside each end is still accepted, so this is a boundary
+    // rather than a quietly narrowed range.
+    h0::AutoCal in;
+    CHECK(chargeTo(in, 3665) == 1148);
+}
+
 TEST_CASE("a plateau interrupted before the window never calibrates") {
     h0::AutoCal c;
     hold(c, 3600, 5);

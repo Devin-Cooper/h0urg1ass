@@ -91,11 +91,17 @@ void SettingsFace::formatValue(RowId id, uint8_t index, const Settings& s,
             return;
         case RowId::Battery:
             if (!bat.valid) { std::snprintf(out, n, "--"); return; }
+            // CHARGING first, ahead of the UNCAL gate. That order used to be
+            // the other way round because `charging` was then a 4220 mV
+            // threshold, and an uncalibrated divider reading +9% high could
+            // trip it on a cell that was not charging at all. It is now
+            // AutoCal's rise-then-plateau on the RAW reading -- gain-
+            // independent by construction -- so the reason is gone, and the
+            // old order cost every device the CHARGING state for the whole of
+            // its uncalibrated life, which is every device up to its first
+            // charge anchor: the entire first hardware verification pass.
+            if (bat.charging) { std::snprintf(out, n, "CHARGING"); return; }
             if (!bat.calibrated) {
-                // Checked BEFORE charging: an uncalibrated divider reads up to
-                // +9% high, which is enough on its own to put a full 4.10 V
-                // cell at an apparent 4.47 V -- so a charging check ahead of
-                // this one would claim CHARGING on a device that is not.
                 // Uncalibrated the gain error is +/-9%, which at 3.9 V is
                 // +/-0.35 V -- WIDER THAN THE WHOLE BUCKET RANGE. So the bucket
                 // is not merely imprecise, it is uninformative, and printing
@@ -104,7 +110,6 @@ void SettingsFace::formatValue(RowId id, uint8_t index, const Settings& s,
                 std::snprintf(out, n, "UNCAL");
                 return;
             }
-            if (bat.charging) { std::snprintf(out, n, "CHARGING"); return; }
             // One decimal: the honest resolution against a +/-74 mV calibrated
             // residual. Nine characters at 8x12 is the column's widest value.
             std::snprintf(out, n, "%s %u.%uv", bucketName(bucketFor(bat.milliVolts)),
