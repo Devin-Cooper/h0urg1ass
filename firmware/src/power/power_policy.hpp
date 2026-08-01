@@ -38,6 +38,11 @@ struct PowerInput {
     /// Deliberately NOT read from the live `Settings` handed to update(): see
     /// the comment at its only use, which is the whole reason this field exists.
     uint16_t armedFloorRawMv = 0;
+    /// The gain `battery.milliVolts` above was ACTUALLY CORRECTED WITH.
+    ///
+    /// The cutoff and the reading it is compared against must come from the
+    /// same gain. Also not read from the live `Settings` -- see its use.
+    uint16_t armedGainPermille = 1000;
 };
 
 /// Every power-off threshold in one testable place.

@@ -350,10 +350,11 @@ TEST_CASE("a floor that survived a power cycle arms the cutoff") {
     CHECK(p.update(in, s).action == h0::PowerAction::PowerOff);
 }
 
-TEST_CASE("the armed cutoff still follows the gain, which is read live") {
+TEST_CASE("the armed cutoff still follows the gain the reading was corrected with") {
     // The floor is frozen at boot; the GAIN is not. A gain learned this
-    // session moves an already-armed cutoff, which is safe -- a better gain
-    // can only move a cutoff that exists, never conjure one.
+    // session moves an already-armed cutoff as soon as it reaches the reading,
+    // which is safe -- a better gain can only move a cutoff that exists, never
+    // conjure one.
     h0::PowerPolicy p;
     h0::Settings s;
 
@@ -363,11 +364,41 @@ TEST_CASE("the armed cutoff still follows the gain, which is read live") {
     in.battery.valid = true;
     in.battery.milliVolts = 3500;
 
-    s.batCalPermille = 1000; // cutoff = 3200 + 250 = 3450
+    in.armedGainPermille = 1000; // cutoff = 3200 + 250 = 3450
     CHECK(p.update(in, s).action == h0::PowerAction::None);
 
     h0::PowerPolicy q;
-    s.batCalPermille = 1052; // 3200 raw -> 3366 corrected, cutoff 3616
+    in.armedGainPermille = 1052; // 3200 raw -> 3366 corrected, cutoff 3616
+    CHECK(q.update(in, s).action == h0::PowerAction::PowerOff);
+}
+
+TEST_CASE("a previewed gain cannot move the cutoff out from under the reading") {
+    // The cutoff and the reading it is compared against must come from the
+    // SAME gain. main.cpp corrects battery.milliVolts with the COMMITTED gain
+    // but hands update() the settings menu's live preview, so taking the gain
+    // from `Settings` here would let a CAL drag lift the cutoff while the
+    // reading stayed put -- and the CAL row accelerates, so a single flick
+    // sweeps the whole 850..1150 ladder. This device has a floor from a
+    // previous cycle and a pack at 3700 mV, ~20% left, nothing running: it
+    // must survive the drag.
+    h0::PowerPolicy p;
+    h0::Settings s;
+    s.batCalPermille = h0::kCalMax; // the preview, flicked to the top
+
+    h0::PowerInput in;
+    in.now = 10'000'000ull;
+    in.armedFloorRawMv = 3380;
+    in.armedGainPermille = 1000;  // what the reading was actually corrected with
+    in.battery.valid = true;
+    in.battery.milliVolts = 3700; // corrected at 1000; the true cutoff is 3630
+
+    CHECK(p.update(in, s).action == h0::PowerAction::None);
+
+    // The pair moving TOGETHER is a different matter, and must still fire:
+    // at 1150 the same 3380 raw floor corrects to 3887, so the cutoff clamps
+    // to kCutoffMaxMv 3750 and 3700 really is below it.
+    h0::PowerPolicy q;
+    in.armedGainPermille = h0::kCalMax;
     CHECK(q.update(in, s).action == h0::PowerAction::PowerOff);
 }
 

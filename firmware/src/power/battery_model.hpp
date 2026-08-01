@@ -45,7 +45,16 @@ struct BatteryReading {
     /// Lowering it does not help either: a full resting cell and a cell held at
     /// CV differ by tens of millivolts. A rise is the only unambiguous signal.
     bool charging = false;
-    bool calibrated = false; ///< batCalPermille != 1000
+    /// "Something measured has landed", not "the gain differs from 1000".
+    ///
+    /// Set in board/battery.cpp from `batCalPermille != 1000 || batCalAuto == 0
+    /// || batFloorRawMv != 0`. The bare first term had no way out for a board
+    /// whose true gain IS unity -- AutoCal anchors at 1000, the deadband
+    /// refuses the redundant write, and the row would say UNCAL for the life of
+    /// the device. The second is what covers it: a hand-set wheel is a decision
+    /// rather than a default, 1000 included. The third is a liveness backstop,
+    /// not evidence about the gain.
+    bool calibrated = false;
     bool valid = false;
 };
 

@@ -65,6 +65,11 @@ public:
     /// the run that is supposed to reach brownout -- see PowerPolicy::update,
     /// which takes it from `PowerInput::armedFloorRawMv` for exactly this
     /// reason.
+    ///
+    /// `permille` must be the gain the reading this cutoff will be compared
+    /// against was corrected with. Correct the two with different gains and
+    /// they no longer move together, which is a threshold that shifts under
+    /// the value it is measuring.
     static uint16_t cutoffMv(uint16_t storedRaw, uint16_t permille);
 };
 

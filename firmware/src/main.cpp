@@ -963,6 +963,14 @@ int main() {
             // declaration. A floor learned during this descent must not arm
             // the cutoff that would end it.
             pin.armedFloorRawMv = bootFloorRawMv;
+            // The gain `batteryReading.milliVolts` was ACTUALLY CORRECTED
+            // WITH, a few hundred lines above, which is sessionSettings' --
+            // never `eff`'s. The cutoff and the reading it is compared against
+            // have to be derived from the same gain or a previewed CAL change
+            // moves one and not the other, and the CAL wheel accelerates. `eff`
+            // is still what update() reads for offAfterS and the rest of the
+            // live preview; only the cutoff derivation is pinned here.
+            pin.armedGainPermille = sessionSettings.batCalPermille;
             powerDecision = powerPolicy.update(pin, eff);
         }
 

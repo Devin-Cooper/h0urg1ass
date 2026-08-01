@@ -104,11 +104,20 @@ PowerDecision PowerPolicy::update(const PowerInput& in, const Settings& s) {
         // is what makes "the first run to empty IS the learning run" true.
         // main.cpp snapshots it once at boot and never reassigns it.
         //
-        // The GAIN still comes from `s`, live: a better gain can only move a
-        // cutoff that already exists, never conjure one, so there is nothing
-        // here for it to short-circuit.
+        // `in.armedGainPermille`, NOT `s.batCalPermille`, and for a second and
+        // independent reason: THE CUTOFF AND THE READING IT IS COMPARED
+        // AGAINST MUST BE DERIVED FROM THE SAME GAIN. `in.battery.milliVolts`
+        // was corrected upstream, once, with the committed gain; `s` is the
+        // settings menu's live preview. Take the gain from `s` and a previewed
+        // change moves the cutoff while the reading stays put -- and CAL
+        // accelerates, so one flick sweeps the whole 850..1150 ladder. A pack
+        // sitting at 3700 mV over a floor of 3380 would then power off
+        // mid-drag with ~20% left, bounded only by kCutoffMaxMv and
+        // unexplainable to whoever it happened to. Both sides scaling together
+        // is what makes a gain change safe: it can move an armed cutoff, but
+        // never conjure one, and never move it relative to the reading.
         const uint16_t cutoff =
-            BatteryFloor::cutoffMv(in.armedFloorRawMv, s.batCalPermille);
+            BatteryFloor::cutoffMv(in.armedFloorRawMv, in.armedGainPermille);
         // Belt and braces: cutoffMv already returns 0 when unlearned, and
         // milliVolts < 0 would be false anyway after unsigned promotion, so
         // this check is redundant. It stays so the disarm is visible where
