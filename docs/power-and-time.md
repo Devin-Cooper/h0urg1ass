@@ -901,14 +901,28 @@ Two honest caveats:
    rail starts sagging below VBAT ≈ 3.35 V. And because `ADC_AVDD` *is* that rail, **a
    sagging reference makes the battery read artificially high exactly when it is nearly
    flat.** Stay out of the dropout region entirely and this failure mode never occurs.
+   **As built the cutoff is not a constant**: it is the lowest raw reading this board has
+   actually run at plus a 250 mV margin, clamped to [3.45, 3.75] V (§9, `h0::BatteryFloor`).
+   3.45 V is that clamp's *floor*, and this paragraph is the reason for it.
 
-**Charging detection: there is none.** ETA6096 STAT is unconnected and VBUS is not routed to
-any GPIO `[SCH]`. The options are: (a) infer USB from CDC enumeration
-(`stdio_usb_connected()`) — detects a host, not a dumb charger; (b) bodge TP1 (VBUS) through
-a 100 k/100 k divider to TP4 (GPIO0) for a real 5 V-safe VBUS sense; (c) suppress the SoC
-display whenever `V_batt > 4.22 V`, which can only happen under charge. Recommendation:
-**(a) plus (c)**, and show "Charging" rather than a percentage — the terminal voltage during
-CC charge tells nothing about SoC.
+**Charging detection: there is no hardware signal.** ETA6096 STAT is unconnected and VBUS is
+not routed to any GPIO `[SCH]`. The options considered were: (a) infer USB from CDC
+enumeration (`stdio_usb_connected()`) — detects a host, not a dumb charger; (b) bodge TP1
+(VBUS) through a 100 k/100 k divider to TP4 (GPIO0) for a real 5 V-safe VBUS sense; (c)
+suppress the SoC display whenever `V_batt > 4.22 V`, which can only happen under charge.
+
+**What is built is none of those.** Charge is inferred from the *shape* of the reading
+(`h0::AutoCal`, `firmware/src/power/auto_cal.cpp`): a rise of ≥ 100 mV above the running
+minimum opens a session, and a fall of ≥ 100 mV below that session's peak closes it. Option
+(c) has been **deleted**: 4.22 V sits *above* the ETA6096's own 4.21 V typ CV setpoint
+(4.17 min / 4.25 max `[ETA]`), so on a typical part it can never fire once the gauge is
+calibrated, and it only ever appeared to work because an uncalibrated divider reads high.
+Lowering the number does not rescue it either — a full resting cell and a cell held at CV
+differ by tens of millivolts, so only a *rise* is unambiguous. Option (a) is still read, but
+for the power-off routes rather than for charge state: it reports enumeration, so a dumb
+charger or a suspended host looks exactly like battery. The row shows "Charging" rather than
+a bucket for the whole session — the terminal voltage during CC charge tells nothing about
+SoC.
 
 ---
 
@@ -1092,7 +1106,7 @@ component figures in §8.2.*
 | **ACTIVE** | on, BL 64/256 = **25 %** | 125 MHz | **~28 mA** | ~18 h | Touch, an IMU motion event, PWR press, alarm firing, or wake from any state | 20 s with neither touch nor motion → DIMMED. A sounding alarm holds ACTIVE: it is the one moment the device is trying to be seen from across a room. |
 | **DIMMED** | on, BL 36/256 = **14 %**; ST7789 IDMON + partial updates *(not built)* | 48 MHz, WFI between frames *(not built)* | **~23 mA as built, ~13 mA once the clock-down lands** | ~21.5 h → ~38 h | 20 s idle in ACTIVE | Touch/PWR/motion → ACTIVE; 60 s more idle → SCREEN_OFF *(not built)* |
 | **SCREEN_OFF (counting)** | off (SLPIN, BL 0) | POWMAN **P1.0**, all SRAM retained | **~0.32 mA** | ~65 days | 60 s idle in DIMMED **while a timer is running** | RTC /INT (GPIO18, level-low) → ACTIVE; PWR (GPIO14) → ACTIVE; AON backup alarm; IMU wake-on-motion if enabled |
-| **OFF** | off | unpowered | **~32 µA** | ~1.8 yr *(self-discharge dominates)* | **Long-press PWR** — built: `board::PowerButton` reads GPIO14 and `h0::PowerPolicy` runs the two-stage hold (`firmware/src/power/power_policy.cpp`). **Or** idle auto-off, configurable via the `OFF AT` settings row (2/5/10/30 min or `NEVER`, default 5 min). **Or** V_batt < 3.45 V, **gated on calibration** — uncalibrated the gain error is ±9 % (±0.35 V) (§7.2), the same reason the battery row already refuses to show a number in that state | PWR press (hardware, via D1 → Q3) |
+| **OFF** | off | unpowered | **~32 µA** | ~1.8 yr *(self-discharge dominates)* | **Long-press PWR** — built: `board::PowerButton` reads GPIO14 and `h0::PowerPolicy` runs the two-stage hold (`firmware/src/power/power_policy.cpp`). **Or** idle auto-off, configurable via the `OFF AT` settings row (2/5/10/30 min or `NEVER`, default 5 min). **Or** V_batt below a **learned** cutoff — `clamp(applyCal(learned_floor) + 250 mV, 3450, 3750)`, where the floor is the lowest raw reading this board has ever actually run at (`h0::BatteryFloor`). Disarmed entirely until a floor exists *and has survived a power cycle*, so the first run to brownout is the learning run and cannot be cut short by its own measurement | PWR press (hardware, via D1 → Q3) |
 
 Draw breakdowns: ACTIVE = 10 (backlight at the 64/256 default) + 16 (MCU/SPI/DMA) + 1.5
 (touch) + 0.09 (LDO Iq) + 0.032 (battery-side) = ~28 mA. At full duty the same state is
@@ -1119,7 +1133,7 @@ stateDiagram-v2
     DIMMED --> OFF: 5 min no touch AND no timer<br/>commit flash, then GPIO15 = 0
     SCREEN_OFF --> ACTIVE: RTC /INT on GPIO18 (LEVEL LOW)<br/>or PWR (GPIO14) or AON backup alarm
     ACTIVE --> OFF: long-press PWR<br/>(commit flash, wait for release, GPIO15 = 0)
-    ACTIVE --> OFF: V_batt < 3.45 V (clean low-battery shutdown)
+    ACTIVE --> OFF: V_batt < the learned cutoff, 3.45-3.75 V<br/>(clean low-battery shutdown; disarmed until a floor survives a power cycle)
 ```
 
 **Rules that make the machine correct rather than merely plausible:**
@@ -1133,8 +1147,14 @@ stateDiagram-v2
   OFF transition to SCREEN_OFF and say so in the UI.
 - **DIMMED, not straight to off.** A single dim step costs almost nothing and prevents the
   "did it hear me?" ambiguity that makes handhelds feel broken.
-- **Low-battery shutdown at 3.45 V, not 3.0 V** — the reason is LDO dropout corrupting the
-  reference, not the cell (§7.5).
+- **Low-battery shutdown in the 3.45–3.75 V band, not at 3.0 V** — and the number inside that
+  band is *learned*, not fixed: the lowest raw reading this board has actually run at, plus a
+  250 mV margin, clamped to the band. 3.45 V is the band's floor because below it LDO dropout
+  corrupts the ADC reference, not because of anything about the cell (§7.5); 3.75 V is its
+  ceiling because above it the device would refuse to run on a healthy pack. The route stays
+  disarmed until a floor has been learned *and* has survived a power cycle — arming on a floor
+  measured during the current descent would end that descent, since the cutoff is always above
+  the reading that produced the floor.
 - **Every transition into OFF or SCREEN_OFF commits the flash blob first** (§5.4). There is
   no 50 µs power-fail window worth using.
 
