@@ -50,18 +50,6 @@ SandGrid makeVessel(int holeHalfWidth) {
     return w;
 }
 
-void drawLintelOutline(SandGrid& w) {
-    // Jambs and soffit. No head rail: row LINTEL_CY0 - 1 is the vessel's own top
-    // border, already drawn, and the lintel hangs from it.
-    for (int y = sandgeom::LINTEL_CY0; y <= sandgeom::LINTEL_CY1; ++y) {
-        w.set(sandgeom::LINTEL_CX0, y, true);
-        w.set(sandgeom::LINTEL_CX1, y, true);
-    }
-    for (int x = sandgeom::LINTEL_CX0; x <= sandgeom::LINTEL_CX1; ++x) {
-        w.set(x, sandgeom::LINTEL_CY1, true);
-    }
-}
-
 void renderSand(onebit::IFramebuffer& fb, const SandGrid& sand, const SandGrid& walls) {
     buildDoubleTable();
 

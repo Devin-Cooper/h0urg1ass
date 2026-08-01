@@ -50,9 +50,21 @@ constexpr int16_t kBoardW = kCols * kCellW;            // 170
 
 // The library CLAMPS scale down to what the cell holds, silently -- that is its
 // documented contract, not an error -- so a cell too small for kScale would not
-// fail to build, it would quietly render at 1x inside a 2x board. This is the
-// same arithmetic the constructor does, done where it can still be a build
-// error.
+// fail to build, it would quietly render at 1x inside a 2x board.
+//
+// This is the constructor's arithmetic with ONE deliberate difference, and the
+// difference is the limit of what it proves. The library divides by the largest
+// extent it finds by walking the SEQUENCE's glyphs, precisely because
+// `BitmapFont` has no invariant tying its header to its glyph table -- a
+// fixed-width font may declare 13x26 and ship a taller glyph. A constant
+// expression cannot walk that table, so this divides by the HEADER, checked
+// against 13x26 above. It therefore catches the case that actually varies here
+// -- someone changing kScale, kMargin or kCols -- and does NOT catch a
+// regenerated font whose header no longer describes its glyphs.
+//
+// That residue is covered, but by the goldens rather than here: a board that
+// silently dropped to 1x redraws every timer golden, and those are read before
+// they are accepted.
 static_assert(kCellW / kGlyphW >= kScale && kCellH / kGlyphH >= kScale,
               "the cell is too small for kScale and the library would silently downgrade it");
 

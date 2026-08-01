@@ -101,13 +101,6 @@ static_assert(PANEL_CY0 >= 0 && PANEL_CY1 < SandGrid::H, "panel grid rect must b
 /// Build the vessel: border, floor, and a hole of the given half-width.
 SandGrid makeVessel(int holeHalfWidth);
 
-/// Draw the lintel's jambs and soffit into a grid.
-///
-/// No longer used by the vessel: the housing is drawn by the face as an opaque
-/// panel over the sand, not baked into the ink grid. Kept because the tests
-/// still build reference frames with it.
-void drawLintelOutline(SandGrid& w);
-
 /// Draw sand and vessel into `fb`.
 ///
 /// Expands each grid row into two framebuffer rows a byte at a time through a
