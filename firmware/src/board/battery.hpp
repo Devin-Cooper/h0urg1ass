@@ -2,9 +2,21 @@
 
 #include <cstdint>
 
+#include "power/auto_cal.hpp"
 #include "power/battery_model.hpp"
+#include "settings/settings.hpp"
 
 namespace board {
+
+/// What one sample produced: the reading, plus anything the caller should
+/// persist. Non-zero means "store this"; the caller owns the flash, because
+/// SettingsStore is a main() local and this class has no business knowing it
+/// exists.
+struct BatteryUpdate {
+    h0::BatteryReading reading;
+    uint16_t newCalPermille = 0;
+    uint16_t newFloorRawMv = 0;
+};
 
 /// The ADC side of the battery gauge.
 ///
@@ -21,12 +33,13 @@ public:
     void begin();
 
     /// Call every frame. Re-reads at most once per second.
-    h0::BatteryReading sample(uint64_t now, uint16_t calPermille);
+    BatteryUpdate sample(uint64_t now, const h0::Settings& s);
 
 private:
     uint16_t readRawMilliVolts();
 
     h0::BatteryFilter filter_;
+    h0::AutoCal autoCal_;
     uint64_t lastSampleUs_ = 0;
     bool primed_ = false;
 };

@@ -342,7 +342,7 @@ int main() {
 
     {
         const h0::BatteryReading b =
-            battery.sample(time_us_64(), settingsStore.settings().batCalPermille);
+            battery.sample(time_us_64(), settingsStore.settings()).reading;
         printf("battery %u mV (%s)\n", static_cast<unsigned>(b.milliVolts),
                b.calibrated ? "calibrated" : "uncal");
     }
@@ -563,7 +563,23 @@ int main() {
         // by just 1/16 of however far it had drifted since the boot reading --
         // and that same stale value drove both the bucket and the CAL row that
         // calibration exists to be trusted against.
-        batteryReading = battery.sample(now, eff.batCalPermille);
+        //
+        // Read the gain from `eff` so the CAL row previews live while the
+        // wheel is dragged, but persist into the COMMITTED settings: `eff` is
+        // the settings menu's uncommitted preview, and its contract is that
+        // only the swipe commits.
+        const board::BatteryUpdate batteryUpdate = battery.sample(now, eff);
+        batteryReading = batteryUpdate.reading;
+        if (batteryUpdate.newCalPermille != 0 || batteryUpdate.newFloorRawMv != 0) {
+            h0::Settings persisted = settingsStore.settings();
+            if (batteryUpdate.newCalPermille != 0) {
+                persisted.batCalPermille = batteryUpdate.newCalPermille;
+            }
+            if (batteryUpdate.newFloorRawMv != 0) {
+                persisted.batFloorRawMv = batteryUpdate.newFloorRawMv;
+            }
+            settingsStore.commit(persisted);
+        }
 
         h0::Vec3 raw{};
         const bool imuRead = imuOk && imu.readRaw(raw);

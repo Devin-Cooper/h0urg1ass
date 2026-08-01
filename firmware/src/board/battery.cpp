@@ -4,6 +4,7 @@
 #include "pico/stdlib.h"
 
 #include "board/pins.hpp"
+#include "power/battery_floor.hpp"
 
 namespace board {
 
@@ -35,8 +36,11 @@ uint16_t Battery::readRawMilliVolts() {
     return static_cast<uint16_t>((mean * 3300u * 3u) / 4096u);
 }
 
-h0::BatteryReading Battery::sample(uint64_t now, uint16_t calPermille) {
-    if (!primed_ || now - lastSampleUs_ >= kSamplePeriodUs) {
+BatteryUpdate Battery::sample(uint64_t now, const h0::Settings& s) {
+    BatteryUpdate up;
+
+    const bool fresh = (!primed_ || now - lastSampleUs_ >= kSamplePeriodUs);
+    if (fresh) {
         // Filter the RAW reading and apply the gain at the end. Filtering the
         // corrected value would make every CAL wheel step drag a 16-second tail
         // behind it, so the number would never settle while you were adjusting
@@ -46,13 +50,25 @@ h0::BatteryReading Battery::sample(uint64_t now, uint16_t calPermille) {
         primed_ = true;
     }
 
-    h0::BatteryReading r;
-    r.valid = filter_.valid();
-    r.rawMilliVolts = filter_.milliVolts();
-    r.milliVolts = h0::applyCal(r.rawMilliVolts, calPermille);
-    r.charging = h0::isCharging(r.milliVolts);
-    r.calibrated = (calPermille != 1000);
-    return r;
+    up.reading.valid = filter_.valid();
+    up.reading.rawMilliVolts = filter_.milliVolts();
+    up.reading.milliVolts = h0::applyCal(up.reading.rawMilliVolts, s.batCalPermille);
+    up.reading.calibrated = (s.batCalPermille != 1000);
+
+    // Both learners are fed once per SAMPLE, never once per frame: AutoCal's
+    // plateau window counts samples and assumes 1 Hz, so feeding it per frame
+    // would qualify a plateau roughly thirty times too early.
+    if (fresh && up.reading.valid) {
+        const uint16_t gain = autoCal_.push(up.reading.rawMilliVolts);
+        if (gain != 0 && h0::AutoCal::shouldStore(gain, s.batCalPermille, s.batCalAuto)) {
+            up.newCalPermille = gain;
+        }
+        up.newFloorRawMv = h0::BatteryFloor::update(
+            up.reading.rawMilliVolts, up.reading.milliVolts, s.batFloorRawMv);
+    }
+    up.reading.charging = autoCal_.charging();
+
+    return up;
 }
 
 } // namespace board
