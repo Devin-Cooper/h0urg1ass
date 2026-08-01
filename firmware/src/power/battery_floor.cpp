@@ -5,7 +5,6 @@
 namespace h0 {
 
 uint16_t BatteryFloor::update(uint16_t rawMv, uint16_t correctedMv, uint16_t storedRaw) {
-    if (rawMv == 0) return 0;
     if (correctedMv >= kTrackBelowMv) return 0;
 
     // Against the STORED floor, never a per-session minimum. That is the whole

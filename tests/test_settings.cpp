@@ -115,6 +115,25 @@ TEST_CASE("DEFAULTS always rests on KEEP, even after a reset") {
     CHECK(h0::ladderIndex(RowId::Defaults, s) == 0);
 }
 
+TEST_CASE("RESET keeps the learned floor, which is a measurement and not a preference") {
+    // It cost a full discharge to brownout to acquire, and it is the only
+    // thing arming the low-voltage cutoff -- so wiping it would disarm the
+    // safety route until another one. The gain is not exempt: the next charge
+    // re-learns it in a single cycle.
+    Settings s = h0::kDefaults;
+    s.backlightActive = 255;
+    s.batFloorRawMv = 3390;
+    s.batCalPermille = 1052;
+    s.batCalAuto = 0;
+
+    h0::applyLadder(RowId::Defaults, 1, s); // RESET
+
+    CHECK(s.batFloorRawMv == 3390);
+    CHECK(s.backlightActive == h0::kDefaults.backlightActive);
+    CHECK(s.batCalPermille == h0::kDefaults.batCalPermille);
+    CHECK(s.batCalAuto == h0::kDefaults.batCalAuto);
+}
+
 TEST_CASE("DEFAULTS labels both its entries") {
     // Without this the value wheel draws KEEP twice and the user is asked to
     // drag onto a word that never appears.

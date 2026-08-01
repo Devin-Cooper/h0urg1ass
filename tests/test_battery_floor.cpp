@@ -54,6 +54,13 @@ TEST_CASE("a whole descent costs fewer than ten writes") {
     CHECK(stored == 3399);
 }
 
+TEST_CASE("a zero reading records nothing, whatever is already stored") {
+    // There is no explicit guard for this and there does not need to be: 0 is
+    // also the "nothing to do" return, and every path lands on it anyway.
+    CHECK(h0::BatteryFloor::update(0, 0, 0) == 0);
+    CHECK(h0::BatteryFloor::update(0, 0, 3600) == 0);
+}
+
 TEST_CASE("no floor means no cutoff, which is what leaves it disarmed") {
     CHECK(h0::BatteryFloor::cutoffMv(0, 1000) == 0);
 }

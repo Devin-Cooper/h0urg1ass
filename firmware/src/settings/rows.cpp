@@ -139,7 +139,21 @@ void applyLadder(RowId id, uint8_t index, Settings& s) {
             // Selecting RESET applies defaults LIVE, so the user watches it
             // happen -- and lifting the device still undoes it, like any other
             // change. No new gesture, no confirmation dialog.
-            if (index == 1) s = kDefaults;
+            if (index == 1) {
+                // batFloorRawMv is EXEMPT. It is not a preference, it is an
+                // observation that cost a full discharge to brownout to
+                // acquire, and it is the only thing arming the low-voltage
+                // cutoff -- so zeroing it would silently disarm the safety
+                // route until another full discharge, which is the one thing
+                // in this device a user cannot simply redo.
+                //
+                // batCalPermille and batCalAuto do reset, deliberately: those
+                // are preference-shaped, and the next charge re-learns the
+                // gain in a single cycle.
+                const uint16_t floorRawMv = s.batFloorRawMv;
+                s = kDefaults;
+                s.batFloorRawMv = floorRawMv;
+            }
             break;
         case RowId::Battery:
         case RowId::Count:   break;
