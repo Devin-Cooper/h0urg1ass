@@ -27,8 +27,6 @@ uint16_t applyCal(uint16_t rawMilliVolts, uint16_t permille) {
     return static_cast<uint16_t>((static_cast<uint32_t>(rawMilliVolts) * permille) / 1000u);
 }
 
-bool isCharging(uint16_t milliVolts) { return milliVolts > kChargeThresholdMv; }
-
 void BatteryFilter::push(uint16_t mv) {
     if (!valid_) {
         // Seed from the first real reading. Starting at zero makes the row read

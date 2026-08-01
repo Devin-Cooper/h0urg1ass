@@ -17,12 +17,6 @@ const char* bucketName(Bucket b);
 /// so one multiplier fixes it.
 uint16_t applyCal(uint16_t rawMilliVolts, uint16_t permille);
 
-/// Above the cell's own ceiling, only a charger can be holding the terminal up.
-/// ETA6096 STAT is unconnected and VBUS reaches no GPIO, so this is the only
-/// detection that needs no USB stack.
-inline constexpr uint16_t kChargeThresholdMv = 4220;
-bool isCharging(uint16_t milliVolts);
-
 /// IIR at alpha = 1/16 across one-per-second readings: tau is about 16 s, so
 /// the display moves like the cell does rather than like the load.
 class BatteryFilter {
@@ -42,6 +36,14 @@ struct BatteryReading {
     /// probe gain per wheel entry and show what each one would read.
     uint16_t rawMilliVolts = 0;
     uint16_t milliVolts = 0; ///< raw with the stored gain applied
+    /// Set from AutoCal::charging(), not from a voltage threshold.
+    ///
+    /// The threshold this replaces was 4220 mV, which sits ABOVE the ETA6096's
+    /// own 4210 mV CV setpoint (datasheet: 4.17 min / 4.21 typ / 4.25 max), so
+    /// on a typical part it could never fire once the gauge was calibrated. It
+    /// only ever appeared to work because the uncalibrated gain read high.
+    /// Lowering it does not help either: a full resting cell and a cell held at
+    /// CV differ by tens of millivolts. A rise is the only unambiguous signal.
     bool charging = false;
     bool calibrated = false; ///< batCalPermille != 1000
     bool valid = false;

@@ -53,10 +53,3 @@ TEST_CASE("the IIR seeds from the first reading rather than from zero") {
     CHECK(f.milliVolts() > 3690);
     CHECK(f.milliVolts() < 3720);
 }
-
-TEST_CASE("charging is inferred above the cell's own ceiling") {
-    // No fuel gauge, and ETA6096 STAT is unconnected -- but nothing except a
-    // charger can hold the terminal above 4.22 V.
-    CHECK(h0::isCharging(4250));
-    CHECK_FALSE(h0::isCharging(4150));
-}
