@@ -364,7 +364,7 @@ int main() {
     }
 
     static board::St7789_1in69 lcd;
-    if (!lcd.init()) {
+    if (!lcd.begin()) {
         printf("FATAL: display init failed\n");
         while (true) tight_loop_contents();
     }
