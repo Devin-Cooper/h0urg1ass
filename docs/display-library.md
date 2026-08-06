@@ -1356,9 +1356,13 @@ plus one inherited pure virtual from `DisplayDriver`:
     virtual void clear(Color c = WHITE) = 0;
 ```
 
-That is the whole board-specific surface. `include/1bit/hal/README.md:53-64` shows the skeleton;
-`platform/pico-example/main/st7789_pico.hpp` is a complete worked implementation on pico-sdk, for
-the sibling 2.8″ board.
+That is the whole board-specific surface for a controller family the library has no driver for.
+`include/1bit/hal/README.md` shows the skeleton.
+
+**This board is not that case.** ST7789 panels subclass `onebit::St7789Display`, which is already
+this `WindowedDisplayDriver` subclass — `setWindow`, `writePixels` and `clear` are implemented
+there and a board supplies six transport methods plus `stripBuffer()` instead. See §10.8.
+`platform/pico-example/main/st7789_pico.hpp` predates that driver and is superseded.
 
 ### 10.5 The strip-buffer contract — get this wrong and you will chase the wrong bug
 
@@ -1486,20 +1490,33 @@ and the tests assert the results are identical. Expansion is not the bottleneck:
 `docs/hardware.md` §7 puts 1bpp→RGB565 for a full frame at ~1.17 ms at 150 MHz sys and ~0.69 ms at
 250 MHz — **3.7 % of push time**.
 
-### 10.8 What the library does *not* give you for this board
+### 10.8 What the library gives you for this board, and what it does not
 
-**There is no ST7789 driver in the library proper.** `grep -rl st7789 include/ src/` returns only
-`panel_geometry.hpp` (the geometry presets), `pixel_format.hpp` (a doc comment) and
-`hal/README.md`. The only ST7789 transport code in the tree is
-`platform/pico-example/main/st7789_pico.{hpp,cpp}` — an *example*, targeting the
-RP2350-Touch-LCD-**2.8** (240 × 320, different pin map: SCK 10 / MOSI 11 / CS 13 / DC 14 / RST 15
-/ BL 16). This board is SCK 10 / MOSI 11 / **DC 8 / CS 9 / RST 13 / BL 25** [S3].
+**There *is* an ST7789 driver in the library proper.** `onebit::St7789Display`
+(`include/1bit/hal/st7789_display.hpp`, `src/hal/st7789_display.cpp`) is a complete
+`WindowedDisplayDriver` for the family: it owns the init walk, MADCTL, `setWindow` (CASET / RASET
+/ RAMWR), `writePixels`, `clear`, `setInverted` and `sleepIn`. What it does **not** own is the
+bus — six pure virtuals (`sendCommand`, `beginPixelStream`, `sendPixels`, `endPixelStream`,
+`hardReset`, `delayMs`) plus the `stripBuffer()` every `WindowedDisplayDriver` subclass owes.
+The board's init sequence is passed in as data, a `St7789InitCmd[]` in a `St7789Config`; the
+table is borrowed by pointer, so it must outlive the driver.
 
-That example is nonetheless the reference to copy: it demonstrates ping-pong strips, 16-bit SPI
-frames with little-endian RGB565, a `waitIdle()` that blocks until DMA drains and the shift
-register empties, an `actualBaud()` accessor (the PL022 divides `clk_peri` by an integer prescale
-× postdiv, so the requested baud is rarely the achieved one), and a real PWM `setBacklight`
-override. Writing `St7789H0urg1ass` against it is §12 G10 and is firmware work, not library work.
+`board::St7789_1in69` (`firmware/src/board/st7789_1in69.{hpp,cpp}`) is that transport for this
+board, and nothing more: SPI1 setup, the plain-GPIO CS held across a whole window-plus-stream,
+ping-pong DMA strips with `channel_config_set_bswap`, `waitIdle()`, `actualBaud()`, a PWM
+`setBacklight` and a `sleepIn()` that adds the controller's settle delay before the rail drops.
+Rotation is honoured by the library — `init()` sends `geometry().madctlFor(rotation())` — though
+only Rot0 has been seen on this glass.
+
+`platform/pico-example/main/st7789_pico.{hpp,cpp}` and the ESP-IDF equivalent still carry
+standalone drivers predating `St7789Display`. They are **superseded, not deleted**: neither of
+their boards is currently accessible, and a driver that compiles is not a driver that drives a
+panel. Do not copy them. They also target the RP2350-Touch-LCD-**2.8** (240 × 320, SCK 10 /
+MOSI 11 / CS 13 / DC 14 / RST 15 / BL 16); this board is SCK 10 / MOSI 11 / **DC 8 / CS 9 /
+RST 13 / BL 25** [S3].
+
+What remains genuinely absent for this board is everything in §12 that is marked **Local** —
+input, timekeeping, persistence — plus the rendering gaps marked **Upstream**.
 
 ---
 
@@ -1636,7 +1653,7 @@ input, timekeeping and persistence.
 | **G7** | **No text alignment or layout helpers beyond `renderStringRight`.** No centre-align, no multi-line, no word wrap, no line height, no text-in-rect fitting. The demo's `L.pad`/`L.row` helpers live in `demo/demo_pages.hpp` and are **not** public API | `include/1bit/render/vector_font.hpp` | **Upstream** for `renderStringCentered`. Local for anything project-specific |
 | **G8** | **Vector font is proportional, not monospaced.** No monospace flag | `src/render/vector_font.cpp`, `getCharWidthMultiplier` | **Upstream**, *low priority*. Verified: all ten digits return `1.0`, so a fixed-format `"MM:SS"` does **not** jitter (§4.4). Only relevant if letters enter the hero line |
 | **G9** | **Vector glyph coverage is narrow.** `0-9 A-Z a-z : - . / %` and `0xB0` only. No `+`, comma, parentheses, arrows or bullets. `getGlyph(' ')` returns `nullptr` | `src/render/vector_font.cpp`, `getGlyph` | **Upstream.** Add glyphs to `src/render/vector_font.cpp` if the UI wants `+` or an arrow at hero size |
-| **G10** | **No ST7789 driver in the library proper.** Only `platform/pico-example/`, which targets the 2.8″ board with a different pin map and geometry | `grep -rl st7789 include/ src/` | **Local.** A `WindowedDisplayDriver` subclass supplying the four methods of §10.4, with `st7789_240x280_1in69()`, `rgb565()`, `INVON`, ping-pong strips, and SCK ≤ 62.5 MHz [S8]. Transport is per-board by design |
+| **G10** | ~~No ST7789 driver in the library proper.~~ **Closed.** `onebit::St7789Display` is upstream now (`include/1bit/hal/st7789_display.hpp`): full command set, init walk, MADCTL, window framing, `clear`, `setInverted`, `sleepIn`, host-tested | `include/1bit/hal/st7789_display.hpp`; `tests/hal/test_st7789_display.cpp` | **Done, both halves.** Upstream took the driver; local kept only what is irreducibly per-board — `board::St7789_1in69` subclasses `St7789Display` and supplies the six transport methods plus `stripBuffer()`, with the init sequence passed in as a `St7789InitCmd[]`. `st7789_240x280_1in69()`, `INVON` and SCK ≤ 62.5 MHz [S8] are all still in force; MADCTL is now the driver's, not the board's. See §10.8 |
 | **G11** | **Backlight control is present but inert on the base classes.** `setBacklight(uint8_t)` and `setLowPower(bool)` **do exist** as virtuals — but they return `false`, `WindowedDisplayDriver` does not override them, and its `caps()` sets only `partialUpdate` | `include/1bit/hal/display.hpp:72-73`, `95-99` | **Local** for the override (PWM slice 4 channel B on GPIO25, plus `caps().backlight = true`; `setLowPower` → `IDMON`/`IDMOFF` 0x39/0x38 [S8]). **Upstream** for a `BacklightRamp` helper combining `AnimationTimer`, an easing function and `setBacklight` |
 | **G12** | **No input HAL at all.** No touch, button, encoder or GPIO abstraction anywhere. The target board is a *Touch*-LCD with a CST816-family controller at I²C `0x15` [S11][S12] and the library offers nothing | `grep` over `include/` | **Local** first — a CST816 driver plus the power key on GPIO14 [S3]. A portable input seam would be reasonable upstream work later; it is a notable asymmetry given how carefully the output side was abstracted |
 | **G13** | **No time source.** No `millis()`, `now()`, `std::chrono`, RTC or uptime abstraction. `AnimationTimer` is delta-driven and needs you to supply `delta_ms`. Nothing counts down, formats `MM:SS`, or handles wall-clock. No `printf`/`snprintf` dependency either | `grep` over `include/` | **Local**, and correctly so. RP2350 timer for frame deltas, PCF85063A at `0x51` for wall-clock [S3]. Note the RTC has **no backup cell fitted**, so wall-clock does not survive power-off |

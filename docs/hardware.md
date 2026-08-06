@@ -339,6 +339,13 @@ at multiples of 512.
 
 ## 4. Delta from the validated 2.8 board
 
+> **Historical, for the pin map and the register values only.** This section was written before
+> `onebit::St7789Display` existed, and its instruction to copy `main/st7789_pico.cpp` wholesale is
+> no longer the route: the ST7789 command set, init walk, MADCTL and window framing now live in
+> the library, and `board::St7789_1in69` supplies only the transport. See
+> `docs/display-library.md` §10.8. The pin deltas, register values and RP2350 mechanics below all
+> still hold, and are what actually went into the driver.
+
 Reference implementation: `third_party/1bit-display/platform/pico-example/`. Copy that directory
 wholesale, then apply the deltas below.
 
@@ -697,10 +704,17 @@ sequence.
 seated, and the backlight pin number is right, with zero display-controller involvement. If this
 fails, nothing after it can work.
 
-**Step 4 — SPI up, controller initialised, one solid colour.** Port `St7789Pico` with the new
-`Pins`, the `st7789_240x280_1in69()` geometry and the 1.69 PORCTRL/FRCTRL2 values. Call `init()`
-then `clear(WHITE)`, then `clear(BLACK)`, alternating every second. Print `panel.actualBaud()`
-and `panel.stripBytes()`.
+**Step 4 — SPI up, controller initialised, one solid colour.** Construct
+`board::St7789_1in69` — it already carries the pin map, the `st7789_240x280_1in69()` geometry and
+the 1.69 PORCTRL/FRCTRL2 values in its init table. Call **`begin()`**, then `clear(WHITE)`, then
+`clear(BLACK)`, alternating every second. Print `panel.actualBaud()`.
+
+`begin()` is the entry point, not `init()`: `init()` is the library driver's panel bring-up
+(reset plus the command table) and assumes the bus already exists, so calling it first would push
+commands into an uninitialised SPI1 with no GPIO directions and no DMA channel. It is `= delete`d
+on `St7789_1in69` for exactly that reason, so the mistake is a compile error rather than a dead
+panel. `stripBytes()` is private state and has no accessor; the strip size is
+`width() × 2 × stripRows` with `stripRows` defaulting to 40 (19,200 B, and 280 = 7 × 40 exactly).
 **Verify:** the whole glass goes uniformly white, then uniformly black. If it is inverted (white
 where black was requested), INVON is missing or doubled. If it stays backlit-but-blank, check
 that CS is a plain GPIO and RST is GPIO13. Now unplug USB with a battery attached — **the
