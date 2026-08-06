@@ -1,6 +1,6 @@
 #pragma once
 
-#include <1bit/hal/st7789_display.hpp>
+#include <1bit/hal/dcs_panel_display.hpp>
 
 #include <cstdint>
 
@@ -10,7 +10,7 @@ namespace board {
 
 /// The 1.69" 240x280 panel on the Waveshare RP2350-Touch-LCD-1.69.
 ///
-/// Everything about the ST7789 command set now lives in onebit::St7789Display;
+/// Everything about the ST7789 command set now lives in onebit::DcsPanelDisplay;
 /// what remains here is the bus. Three copies of that command set used to
 /// exist -- this one, and one per SDK in the library's platform examples.
 ///
@@ -24,16 +24,16 @@ namespace board {
 /// reset line drops the latch and switches the board off mid-frame on battery,
 /// while behaving perfectly over USB. The pin map lives in pins.hpp and is
 /// corroborated by nine vendor code artifacts.
-class St7789_1in69 : public onebit::St7789Display {
+class St7789_1in69 : public onebit::DcsPanelDisplay {
 public:
     /// `use16BitFrames` ships pixels as 16-bit SPI frames rather than bytes,
     /// halving the DMA transfer count and removing the manual byte swap the
-    /// vendor code does. onebit::St7789Display fixes the expander's wire
+    /// vendor code does. onebit::DcsPanelDisplay fixes the expander's wire
     /// format to big-endian RGB565, so this driver compensates in the DMA
     /// itself (channel_config_set_bswap) rather than asking the expander for
     /// little-endian bytes -- see sendPixels() in the .cpp.
     ///
-    /// `rot` is honoured: onebit::St7789Display::init() emits MADCTL from
+    /// `rot` is honoured: onebit::DcsPanelDisplay::init() emits MADCTL from
     /// geometry().madctlFor(rotation()) after walking the board's table, so
     /// the panel's scan direction and the window addressing setWindow()
     /// computes cannot disagree. Only Rot0 has been seen on this glass --
@@ -49,13 +49,13 @@ public:
     /// Board-level bring-up: pins, SPI, DMA, then the panel's own init.
     bool begin();
 
-    /// Deleted, not merely unused. onebit::St7789Display::init() is public
+    /// Deleted, not merely unused. onebit::DcsPanelDisplay::init() is public
     /// and does panel bring-up only -- reset and the command table. Reaching
     /// it directly on this board means sendCommand() writing into an
     /// uninitialised spi1 with no GPIO directions set and no DMA channel
     /// claimed, which is not a compile error and not an obvious runtime one
     /// either. **Call begin()**, which sets all of that up and then calls
-    /// St7789Display::init() itself.
+    /// DcsPanelDisplay::init() itself.
     bool init() = delete;
 
     onebit::DisplayCaps caps() const override {
@@ -65,7 +65,7 @@ public:
         return c;
     }
 
-    /// Neither of onebit::St7789Display's versions is virtual, so these hide
+    /// Neither of onebit::DcsPanelDisplay's versions is virtual, so these hide
     /// (not override) the inherited ones -- deliberately, because this panel
     /// needs INVON just to render ink as black at all. The base maps
     /// true->INVON/false->INVOFF verbatim; this panel's "normal" UI state
@@ -80,7 +80,7 @@ public:
 
     /// SLPIN, then the settle delay the base class does not have.
     ///
-    /// Hides (does not override) onebit::St7789Display::sleepIn(), which
+    /// Hides (does not override) onebit::DcsPanelDisplay::sleepIn(), which
     /// sends the command and returns. The only caller is
     /// PowerButton::shutdown(), and what follows it there is three short I2C
     /// transactions, watchdog_disable() and then the SYS_EN latch drop --

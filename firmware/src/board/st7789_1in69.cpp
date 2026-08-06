@@ -17,7 +17,7 @@ namespace {
 // are load-bearing -- this is the sequence the panel was tuned with, and the
 // gamma tables in particular are specific to this module.
 //
-// No MADCTL entry: onebit::St7789Display::init() emits 0x36 itself, from
+// No MADCTL entry: onebit::DcsPanelDisplay::init() emits 0x36 itself, from
 // geometry().madctlFor(rotation()), after this table. That is the one command
 // that has to agree with the window addressing the driver computes, so the
 // driver owns it. A pinned entry here would be dead bytes at best and a
@@ -30,7 +30,7 @@ namespace {
 // in this firmware (see main.cpp's colour-vs-inversion comment), so this
 // static entry is the only place that command is ever sent.
 //
-// Namespace scope is required, not incidental: St7789Config borrows this
+// Namespace scope is required, not incidental: DcsPanelConfig borrows this
 // table by pointer and walks it on every init().
 const uint8_t kColmod[]     = {0x05}; // 16 bpp on the MCU interface
 const uint8_t kPorch[]      = {0x0B, 0x0B, 0x00, 0x33, 0x35};
@@ -49,7 +49,7 @@ const uint8_t kNvgamctrl[]  = {0xF0, 0x04, 0x08, 0x08, 0x07, 0x03, 0x28,
                                0x32, 0x40, 0x3B, 0x19, 0x18, 0x2A, 0x2E};
 const uint8_t kGatectrl[]   = {0x25, 0x00, 0x00};
 
-const onebit::St7789InitCmd kInit[] = {
+const onebit::DcsInitCmd kInit[] = {
     {0x3A, sizeof(kColmod),    kColmod,    0},
     {0xB2, sizeof(kPorch),     kPorch,     0},
     {0xB7, sizeof(kGctrl),     kGctrl,     0},
@@ -69,8 +69,8 @@ const onebit::St7789InitCmd kInit[] = {
     {0x29, 0, nullptr, 50},  // DISPON
 };
 
-onebit::St7789Config makeConfig() {
-    onebit::St7789Config cfg;
+onebit::DcsPanelConfig makeConfig() {
+    onebit::DcsPanelConfig cfg;
     cfg.geometry = onebit::PanelGeometry::st7789_240x280_1in69();
     cfg.init = kInit;
     cfg.initCount = sizeof(kInit) / sizeof(kInit[0]);
@@ -81,12 +81,12 @@ onebit::St7789Config makeConfig() {
 
 St7789_1in69::St7789_1in69(onebit::Rotation rot, uint32_t spiBaud, int stripRows,
                            bool use16BitFrames)
-    : St7789Display(makeConfig(), rot)
+    : DcsPanelDisplay(makeConfig(), rot)
     , spi_(spi1)
     , requestedBaud_(spiBaud)
     , stripRows_(stripRows)
     , use16_(use16BitFrames) {
-    // No rotation guard: onebit::St7789Display::init() sends MADCTL from
+    // No rotation guard: onebit::DcsPanelDisplay::init() sends MADCTL from
     // geometry().madctlFor(rotation()), so the panel scans the axis the
     // window addressing assumes. Only Rot0 has been seen on this glass --
     // see the header.
@@ -154,7 +154,7 @@ bool St7789_1in69::begin() {
     pwm_init(blSlice_, &cfg, true);
     pwm_set_gpio_level(lcd::BACKLIGHT, 0);
 
-    const bool ok = St7789Display::init();
+    const bool ok = DcsPanelDisplay::init();
     inited_ = ok;
     return ok;
 }
@@ -210,7 +210,7 @@ void St7789_1in69::sendPixels(const uint8_t* data, size_t len) {
     //
     // Read from format().order rather than assumed: the expander's byte order
     // is set by a DEFAULT ARGUMENT on PixelFormat::rgb565() in the library,
-    // which onebit::St7789Display calls with no arguments at all. Nothing
+    // which onebit::DcsPanelDisplay calls with no arguments at all. Nothing
     // enforces that default across the repository boundary, and the failure
     // mode is the invisible kind -- WHITE and PAPER are 0x0000 and 0xFFFF,
     // both byte-swap-invariant, so a change upstream would look perfect in
@@ -224,7 +224,7 @@ void St7789_1in69::sendPixels(const uint8_t* data, size_t len) {
 
 void St7789_1in69::endPixelStream() {
     if (pixelMode_) {
-        // St7789Display::clear() calls this right after the final sendPixels()
+        // DcsPanelDisplay::clear() calls this right after the final sendPixels()
         // of the last chunk, with no intervening waitIdle() -- endPixelStream()
         // is the only post-stream hook the base class exposes, so its contract
         // implicitly requires the transport to leave the bus safe here.
@@ -279,7 +279,7 @@ uint8_t* St7789_1in69::stripBuffer(size_t& capacityBytes) {
 void St7789_1in69::setInverted(bool on) {
     if (on == uiInverted_) return;
     uiInverted_ = on;
-    // Deferred until begin() has actually run: St7789Display::setInverted()
+    // Deferred until begin() has actually run: DcsPanelDisplay::setInverted()
     // sends immediately, and calling it before spi_init()/the GPIO setup in
     // begin() would poke uninitialised SPI. Before that point the preference
     // is simply remembered, same as the pre-migration guard.
@@ -287,13 +287,13 @@ void St7789_1in69::setInverted(bool on) {
         // XORed against the panel's own polarity requirement, not sent
         // verbatim -- see the class declaration's comment. This is the same
         // trick the static INVON entry in kInit uses for the boot-time send.
-        St7789Display::setInverted(geometry().invert != uiInverted_);
+        DcsPanelDisplay::setInverted(geometry().invert != uiInverted_);
     }
 }
 
 void St7789_1in69::sleepIn() {
     if (!inited_) return;
-    St7789Display::sleepIn();
+    DcsPanelDisplay::sleepIn();
     // The controller needs a moment before the rail goes. This delay was in
     // the pre-migration sleepIn() and the base class does not have it; the
     // only caller, PowerButton::shutdown(), drops SYS_EN a few hundred
