@@ -1359,7 +1359,7 @@ plus one inherited pure virtual from `DisplayDriver`:
 That is the whole board-specific surface for a controller family the library has no driver for.
 `include/1bit/hal/README.md` shows the skeleton.
 
-**This board is not that case.** ST7789 panels subclass `onebit::St7789Display`, which is already
+**This board is not that case.** ST7789 panels subclass `onebit::DcsPanelDisplay`, which is already
 this `WindowedDisplayDriver` subclass — `setWindow`, `writePixels` and `clear` are implemented
 there and a board supplies six transport methods plus `stripBuffer()` instead. See §10.8.
 `platform/pico-example/main/st7789_pico.hpp` predates that driver and is superseded.
@@ -1492,14 +1492,19 @@ and the tests assert the results are identical. Expansion is not the bottleneck:
 
 ### 10.8 What the library gives you for this board, and what it does not
 
-**There *is* an ST7789 driver in the library proper.** `onebit::St7789Display`
-(`include/1bit/hal/st7789_display.hpp`, `src/hal/st7789_display.cpp`) is a complete
+**There *is* an ST7789 driver in the library proper.** `onebit::DcsPanelDisplay`
+(`include/1bit/hal/dcs_panel_display.hpp`, `src/hal/dcs_panel_display.cpp`) is a complete
 `WindowedDisplayDriver` for the family: it owns the init walk, MADCTL, `setWindow` (CASET / RASET
 / RAMWR), `writePixels`, `clear`, `setInverted` and `sleepIn`. What it does **not** own is the
 bus — six pure virtuals (`sendCommand`, `beginPixelStream`, `sendPixels`, `endPixelStream`,
 `hardReset`, `delayMs`) plus the `stripBuffer()` every `WindowedDisplayDriver` subclass owes.
-The board's init sequence is passed in as data, a `St7789InitCmd[]` in a `St7789Config`; the
+The board's init sequence is passed in as data, a `DcsInitCmd[]` in a `DcsPanelConfig`; the
 table is borrowed by pointer, so it must outlive the driver.
+
+The name is not ST7789-specific, and neither is the driver: it is the MIPI Display Command Set's
+windowed-panel path — `0x2A` / `0x2B` / `0x2C`, big-endian coordinates, RGB565 — and upstream now
+also drives a 368 × 448 SH8601 AMOLED over QSPI through the same class. Nothing about that
+affects this board; it is why the class is called what it is.
 
 `board::St7789_1in69` (`firmware/src/board/st7789_1in69.{hpp,cpp}`) is that transport for this
 board, and nothing more: SPI1 setup, the plain-GPIO CS held across a whole window-plus-stream,
@@ -1509,7 +1514,7 @@ Rotation is honoured by the library — `init()` sends `geometry().madctlFor(rot
 only Rot0 has been seen on this glass.
 
 `platform/pico-example/main/st7789_pico.{hpp,cpp}` and the ESP-IDF equivalent still carry
-standalone drivers predating `St7789Display`. They are **superseded, not deleted**: neither of
+standalone drivers predating `DcsPanelDisplay`. They are **superseded, not deleted**: neither of
 their boards is currently accessible, and a driver that compiles is not a driver that drives a
 panel. Do not copy them. They also target the RP2350-Touch-LCD-**2.8** (240 × 320, SCK 10 /
 MOSI 11 / CS 13 / DC 14 / RST 15 / BL 16); this board is SCK 10 / MOSI 11 / **DC 8 / CS 9 /
@@ -1653,7 +1658,7 @@ input, timekeeping and persistence.
 | **G7** | **No text alignment or layout helpers beyond `renderStringRight`.** No centre-align, no multi-line, no word wrap, no line height, no text-in-rect fitting. The demo's `L.pad`/`L.row` helpers live in `demo/demo_pages.hpp` and are **not** public API | `include/1bit/render/vector_font.hpp` | **Upstream** for `renderStringCentered`. Local for anything project-specific |
 | **G8** | **Vector font is proportional, not monospaced.** No monospace flag | `src/render/vector_font.cpp`, `getCharWidthMultiplier` | **Upstream**, *low priority*. Verified: all ten digits return `1.0`, so a fixed-format `"MM:SS"` does **not** jitter (§4.4). Only relevant if letters enter the hero line |
 | **G9** | **Vector glyph coverage is narrow.** `0-9 A-Z a-z : - . / %` and `0xB0` only. No `+`, comma, parentheses, arrows or bullets. `getGlyph(' ')` returns `nullptr` | `src/render/vector_font.cpp`, `getGlyph` | **Upstream.** Add glyphs to `src/render/vector_font.cpp` if the UI wants `+` or an arrow at hero size |
-| **G10** | ~~No ST7789 driver in the library proper.~~ **Closed.** `onebit::St7789Display` is upstream now (`include/1bit/hal/st7789_display.hpp`): full command set, init walk, MADCTL, window framing, `clear`, `setInverted`, `sleepIn`, host-tested | `include/1bit/hal/st7789_display.hpp`; `tests/hal/test_st7789_display.cpp` | **Done, both halves.** Upstream took the driver; local kept only what is irreducibly per-board — `board::St7789_1in69` subclasses `St7789Display` and supplies the six transport methods plus `stripBuffer()`, with the init sequence passed in as a `St7789InitCmd[]`. `st7789_240x280_1in69()`, `INVON` and SCK ≤ 62.5 MHz [S8] are all still in force; MADCTL is now the driver's, not the board's. See §10.8 |
+| **G10** | ~~No ST7789 driver in the library proper.~~ **Closed.** `onebit::DcsPanelDisplay` is upstream now (`include/1bit/hal/dcs_panel_display.hpp`): full command set, init walk, MADCTL, window framing, `clear`, `setInverted`, `sleepIn`, host-tested. Named for MIPI DCS rather than ST7789 because it also drives a non-ST7789 panel upstream; it was `St7789Display` when this row was first closed | `include/1bit/hal/dcs_panel_display.hpp`; `tests/hal/test_dcs_panel_display.cpp` | **Done, both halves.** Upstream took the driver; local kept only what is irreducibly per-board — `board::St7789_1in69` subclasses `DcsPanelDisplay` and supplies the six transport methods plus `stripBuffer()`, with the init sequence passed in as a `DcsInitCmd[]`. `st7789_240x280_1in69()`, `INVON` and SCK ≤ 62.5 MHz [S8] are all still in force; MADCTL is now the driver's, not the board's. See §10.8 |
 | **G11** | **Backlight control is present but inert on the base classes.** `setBacklight(uint8_t)` and `setLowPower(bool)` **do exist** as virtuals — but they return `false`, `WindowedDisplayDriver` does not override them, and its `caps()` sets only `partialUpdate` | `include/1bit/hal/display.hpp:72-73`, `95-99` | **Local** for the override (PWM slice 4 channel B on GPIO25, plus `caps().backlight = true`; `setLowPower` → `IDMON`/`IDMOFF` 0x39/0x38 [S8]). **Upstream** for a `BacklightRamp` helper combining `AnimationTimer`, an easing function and `setBacklight` |
 | **G12** | **No input HAL at all.** No touch, button, encoder or GPIO abstraction anywhere. The target board is a *Touch*-LCD with a CST816-family controller at I²C `0x15` [S11][S12] and the library offers nothing | `grep` over `include/` | **Local** first — a CST816 driver plus the power key on GPIO14 [S3]. A portable input seam would be reasonable upstream work later; it is a notable asymmetry given how carefully the output side was abstracted |
 | **G13** | **No time source.** No `millis()`, `now()`, `std::chrono`, RTC or uptime abstraction. `AnimationTimer` is delta-driven and needs you to supply `delta_ms`. Nothing counts down, formats `MM:SS`, or handles wall-clock. No `printf`/`snprintf` dependency either | `grep` over `include/` | **Local**, and correctly so. RP2350 timer for frame deltas, PCF85063A at `0x51` for wall-clock [S3]. Note the RTC has **no backup cell fitted**, so wall-clock does not survive power-off |

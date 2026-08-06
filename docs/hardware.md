@@ -340,7 +340,7 @@ at multiples of 512.
 ## 4. Delta from the validated 2.8 board
 
 > **Historical, for the pin map and the register values only.** This section was written before
-> `onebit::St7789Display` existed, and its instruction to copy `main/st7789_pico.cpp` wholesale is
+> `onebit::DcsPanelDisplay` existed, and its instruction to copy `main/st7789_pico.cpp` wholesale is
 > no longer the route: the ST7789 command set, init walk, MADCTL and window framing now live in
 > the library, and `board::St7789_1in69` supplies only the transport. See
 > `docs/display-library.md` §10.8. The pin deltas, register values and RP2350 mechanics below all
