@@ -3,7 +3,6 @@
 #include <hardware/dma.h>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
-#include <pico/assert.h>
 #include <pico/stdlib.h>
 
 #include <cstdlib>
@@ -18,10 +17,11 @@ namespace {
 // are load-bearing -- this is the sequence the panel was tuned with, and the
 // gamma tables in particular are specific to this module.
 //
-// MADCTL was `geometry().madctlFor(rotation())` at runtime; every call site in
-// this firmware constructs at the default Rot0, for which that resolves to
-// 0x00, so it is pinned here rather than threaded through St7789Config (which
-// has no per-rotation hook of its own).
+// No MADCTL entry: onebit::St7789Display::init() emits 0x36 itself, from
+// geometry().madctlFor(rotation()), after this table. That is the one command
+// that has to agree with the window addressing the driver computes, so the
+// driver owns it. A pinned entry here would be dead bytes at best and a
+// contradiction at any rotation but Rot0.
 //
 // The old INVON/INVOFF line was `(geometry().invert != uiInverted_) ? 0x21 :
 // 0x20`, sent once during init with uiInverted_ still at its default (false).
@@ -29,7 +29,9 @@ namespace {
 // (0x21) -- pinned here the same way. setInverted() is never called anywhere
 // in this firmware (see main.cpp's colour-vs-inversion comment), so this
 // static entry is the only place that command is ever sent.
-const uint8_t kMadctl[]     = {0x00};
+//
+// Namespace scope is required, not incidental: St7789Config borrows this
+// table by pointer and walks it on every init().
 const uint8_t kColmod[]     = {0x05}; // 16 bpp on the MCU interface
 const uint8_t kPorch[]      = {0x0B, 0x0B, 0x00, 0x33, 0x35};
 const uint8_t kGctrl[]      = {0x11};
@@ -48,7 +50,6 @@ const uint8_t kNvgamctrl[]  = {0xF0, 0x04, 0x08, 0x08, 0x07, 0x03, 0x28,
 const uint8_t kGatectrl[]   = {0x25, 0x00, 0x00};
 
 const onebit::St7789InitCmd kInit[] = {
-    {0x36, sizeof(kMadctl),    kMadctl,    0},
     {0x3A, sizeof(kColmod),    kColmod,    0},
     {0xB2, sizeof(kPorch),     kPorch,     0},
     {0xB7, sizeof(kGctrl),     kGctrl,     0},
@@ -85,12 +86,10 @@ St7789_1in69::St7789_1in69(onebit::Rotation rot, uint32_t spiBaud, int stripRows
     , requestedBaud_(spiBaud)
     , stripRows_(stripRows)
     , use16_(use16BitFrames) {
-    // MADCTL is pinned to the Rot0 value in kInit (see above); St7789Config
-    // has no per-rotation hook, so any other rotation would leave the window
-    // addressing (which does track `rot` via geometry().window()) out of
-    // sync with what the panel was actually told to scan. hard_assert rather
-    // than assert: this must still fire in the release build (-DNDEBUG).
-    hard_assert(rot == onebit::Rotation::Rot0);
+    // No rotation guard: onebit::St7789Display::init() sends MADCTL from
+    // geometry().madctlFor(rotation()), so the panel scans the axis the
+    // window addressing assumes. Only Rot0 has been seen on this glass --
+    // see the header.
 }
 
 St7789_1in69::~St7789_1in69() {
@@ -202,14 +201,22 @@ void St7789_1in69::sendPixels(const uint8_t* data, size_t len) {
     channel_config_set_read_increment(&c, true);
     channel_config_set_write_increment(&c, false);
     channel_config_set_dreq(&c, spi_get_dreq(spi_, true));
-    // onebit::St7789Display fixes the expander's wire format to big-endian
-    // RGB565 -- the buffer holds each pixel's high byte first, with no way for
-    // a board to ask for little-endian the way the old driver did. A 16-bit
-    // DMA read takes two memory bytes as a native (little-endian) halfword and
-    // shifts it out MSB-first, which sends that pair in the WRONG order for a
-    // big-endian buffer -- every pixel's bytes would swap. bswap corrects this
-    // in the DMA itself, so the buffer needs no pre-swapping.
-    channel_config_set_bswap(&c, use16_);
+    // A 16-bit DMA read takes two memory bytes as a native (little-endian)
+    // halfword and shifts it out MSB-first, which sends that pair in the
+    // WRONG order for a big-endian buffer -- every pixel's bytes would swap.
+    // bswap corrects that in the DMA itself, so the buffer needs no
+    // pre-swapping. At 8 bits the DMA moves one byte at a time and there is
+    // nothing to swap.
+    //
+    // Read from format().order rather than assumed: the expander's byte order
+    // is set by a DEFAULT ARGUMENT on PixelFormat::rgb565() in the library,
+    // which onebit::St7789Display calls with no arguments at all. Nothing
+    // enforces that default across the repository boundary, and the failure
+    // mode is the invisible kind -- WHITE and PAPER are 0x0000 and 0xFFFF,
+    // both byte-swap-invariant, so a change upstream would look perfect in
+    // the default theme and only corrupt colour in AMBER and NIGHT. Testing
+    // the field instead makes this transport self-correcting either way.
+    channel_config_set_bswap(&c, use16_ && format().order == onebit::ByteOrder::BigEndian);
 
     dma_channel_configure(dmaChan_, &c, &spi_get_hw(spi_)->dr, data,
                           use16_ ? (len / 2) : len, true);
@@ -282,6 +289,17 @@ void St7789_1in69::setInverted(bool on) {
         // trick the static INVON entry in kInit uses for the boot-time send.
         St7789Display::setInverted(geometry().invert != uiInverted_);
     }
+}
+
+void St7789_1in69::sleepIn() {
+    if (!inited_) return;
+    St7789Display::sleepIn();
+    // The controller needs a moment before the rail goes. This delay was in
+    // the pre-migration sleepIn() and the base class does not have it; the
+    // only caller, PowerButton::shutdown(), drops SYS_EN a few hundred
+    // microseconds later and the rail collapses in ~50 us on battery, so
+    // there is nowhere else for this to happen.
+    sleep_ms(5);
 }
 
 bool St7789_1in69::setBacklight(uint8_t level) {

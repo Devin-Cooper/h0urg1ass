@@ -33,12 +33,13 @@ public:
     /// itself (channel_config_set_bswap) rather than asking the expander for
     /// little-endian bytes -- see sendPixels() in the .cpp.
     ///
-    /// `rot` must be Rot0. MADCTL is a fixed init-table entry (see the .cpp),
-    /// not geometry().madctlFor(rotation()) computed per instance -- the
-    /// shared driver's St7789Config has no per-rotation hook -- so any other
-    /// rotation would address a window the panel was never told to scan.
-    /// Enforced with a hard_assert in the .cpp; the parameter stays so the
-    /// constructor's signature is unchanged.
+    /// `rot` is honoured: onebit::St7789Display::init() emits MADCTL from
+    /// geometry().madctlFor(rotation()) after walking the board's table, so
+    /// the panel's scan direction and the window addressing setWindow()
+    /// computes cannot disagree. Only Rot0 has been seen on this glass --
+    /// the vendor's own demos disagree on the landscape MADCTL value (0x78
+    /// vs 0xA0), see PanelGeometry::st7789_240x280_1in69() -- so anything
+    /// else is untested rather than unsupported.
     explicit St7789_1in69(onebit::Rotation rot = onebit::Rotation::Rot0,
                           uint32_t spiBaud = 62'500'000,
                           int stripRows = 40,
@@ -48,11 +49,14 @@ public:
     /// Board-level bring-up: pins, SPI, DMA, then the panel's own init.
     bool begin();
 
-    /// onebit::St7789Display re-declares clear() as protected (it overrides
-    /// DisplayDriver::clear(), which is public). This is not an override --
-    /// no new body, just the access level main.cpp's `lcd.clear(WHITE)`
-    /// already relies on restored.
-    using onebit::St7789Display::clear;
+    /// Deleted, not merely unused. onebit::St7789Display::init() is public
+    /// and does panel bring-up only -- reset and the command table. Reaching
+    /// it directly on this board means sendCommand() writing into an
+    /// uninitialised spi1 with no GPIO directions set and no DMA channel
+    /// claimed, which is not a compile error and not an obvious runtime one
+    /// either. **Call begin()**, which sets all of that up and then calls
+    /// St7789Display::init() itself.
+    bool init() = delete;
 
     onebit::DisplayCaps caps() const override {
         onebit::DisplayCaps c;
@@ -73,6 +77,18 @@ public:
     /// (the base sends immediately, which would poke SPI before spi_init()).
     void setInverted(bool on);
     bool inverted() const { return uiInverted_; }
+
+    /// SLPIN, then the settle delay the base class does not have.
+    ///
+    /// Hides (does not override) onebit::St7789Display::sleepIn(), which
+    /// sends the command and returns. The only caller is
+    /// PowerButton::shutdown(), and what follows it there is three short I2C
+    /// transactions, watchdog_disable() and then the SYS_EN latch drop --
+    /// well under a millisecond, after which the rail collapses in ~50 us on
+    /// battery. The controller needs a moment with power still applied, and
+    /// there is no second chance on that path. Guarded on inited_ for the
+    /// same reason setInverted() is: before begin(), spi1 is not up.
+    void sleepIn();
 
     bool setBacklight(uint8_t level) override;
     void waitIdle();
