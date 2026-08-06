@@ -32,6 +32,13 @@ public:
     /// format to big-endian RGB565, so this driver compensates in the DMA
     /// itself (channel_config_set_bswap) rather than asking the expander for
     /// little-endian bytes -- see sendPixels() in the .cpp.
+    ///
+    /// `rot` must be Rot0. MADCTL is a fixed init-table entry (see the .cpp),
+    /// not geometry().madctlFor(rotation()) computed per instance -- the
+    /// shared driver's St7789Config has no per-rotation hook -- so any other
+    /// rotation would address a window the panel was never told to scan.
+    /// Enforced with a hard_assert in the .cpp; the parameter stays so the
+    /// constructor's signature is unchanged.
     explicit St7789_1in69(onebit::Rotation rot = onebit::Rotation::Rot0,
                           uint32_t spiBaud = 62'500'000,
                           int stripRows = 40,
@@ -46,6 +53,26 @@ public:
     /// no new body, just the access level main.cpp's `lcd.clear(WHITE)`
     /// already relies on restored.
     using onebit::St7789Display::clear;
+
+    onebit::DisplayCaps caps() const override {
+        onebit::DisplayCaps c;
+        c.partialUpdate = true;
+        c.backlight = true;
+        return c;
+    }
+
+    /// Neither of onebit::St7789Display's versions is virtual, so these hide
+    /// (not override) the inherited ones -- deliberately, because this panel
+    /// needs INVON just to render ink as black at all. The base maps
+    /// true->INVON/false->INVOFF verbatim; this panel's "normal" UI state
+    /// (false) is INVON, so sending the base's mapping unmodified would
+    /// complement every RGB565 value reaching the glass the moment a themed
+    /// colour existed -- see main.cpp's colour-vs-inversion comment. This
+    /// restores the pre-migration XOR against geometry().invert, and the
+    /// pre-migration guard that defers the command until begin() has run
+    /// (the base sends immediately, which would poke SPI before spi_init()).
+    void setInverted(bool on);
+    bool inverted() const { return uiInverted_; }
 
     bool setBacklight(uint8_t level) override;
     void waitIdle();
@@ -75,6 +102,8 @@ private:
     int nextStrip_ = 0;
     size_t stripBytes_ = 0;
     int blSlice_ = -1;
+    bool uiInverted_ = false;
+    bool inited_ = false;
 };
 
 } // namespace board

@@ -3,6 +3,7 @@
 #include <hardware/dma.h>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
+#include <pico/assert.h>
 #include <pico/stdlib.h>
 
 #include <cstdlib>
@@ -83,7 +84,14 @@ St7789_1in69::St7789_1in69(onebit::Rotation rot, uint32_t spiBaud, int stripRows
     , spi_(spi1)
     , requestedBaud_(spiBaud)
     , stripRows_(stripRows)
-    , use16_(use16BitFrames) {}
+    , use16_(use16BitFrames) {
+    // MADCTL is pinned to the Rot0 value in kInit (see above); St7789Config
+    // has no per-rotation hook, so any other rotation would leave the window
+    // addressing (which does track `rot` via geometry().window()) out of
+    // sync with what the panel was actually told to scan. hard_assert rather
+    // than assert: this must still fire in the release build (-DNDEBUG).
+    hard_assert(rot == onebit::Rotation::Rot0);
+}
 
 St7789_1in69::~St7789_1in69() {
     if (dmaChan_ >= 0) dma_channel_unclaim(dmaChan_);
@@ -147,7 +155,9 @@ bool St7789_1in69::begin() {
     pwm_init(blSlice_, &cfg, true);
     pwm_set_gpio_level(lcd::BACKLIGHT, 0);
 
-    return St7789Display::init();
+    const bool ok = St7789Display::init();
+    inited_ = ok;
+    return ok;
 }
 
 void St7789_1in69::sendCommand(uint8_t cmd, const uint8_t* params, size_t len) {
@@ -207,6 +217,20 @@ void St7789_1in69::sendPixels(const uint8_t* data, size_t len) {
 
 void St7789_1in69::endPixelStream() {
     if (pixelMode_) {
+        // St7789Display::clear() calls this right after the final sendPixels()
+        // of the last chunk, with no intervening waitIdle() -- endPixelStream()
+        // is the only post-stream hook the base class exposes, so its contract
+        // implicitly requires the transport to leave the bus safe here.
+        // Without draining first, the last chunk's DMA transfer (and/or the
+        // SPI shift register) can still be in flight when CS goes high,
+        // truncating it -- on this panel, at 40-row strips, that is the
+        // bottom 40 rows of a clear() silently never reaching GRAM.
+        if (dmaChan_ >= 0) {
+            dma_channel_wait_for_finish_blocking(dmaChan_);
+        }
+        while (spi_is_busy(spi_)) {
+            tight_loop_contents();
+        }
         gpio_put(lcd::LCD_CS, 1);
         pixelMode_ = false;
     }
@@ -243,6 +267,21 @@ uint8_t* St7789_1in69::stripBuffer(size_t& capacityBytes) {
     // the buffer swapped to was drained before the current one started.
     nextStrip_ ^= 1;
     return strips_[nextStrip_];
+}
+
+void St7789_1in69::setInverted(bool on) {
+    if (on == uiInverted_) return;
+    uiInverted_ = on;
+    // Deferred until begin() has actually run: St7789Display::setInverted()
+    // sends immediately, and calling it before spi_init()/the GPIO setup in
+    // begin() would poke uninitialised SPI. Before that point the preference
+    // is simply remembered, same as the pre-migration guard.
+    if (inited_) {
+        // XORed against the panel's own polarity requirement, not sent
+        // verbatim -- see the class declaration's comment. This is the same
+        // trick the static INVON entry in kInit uses for the boot-time send.
+        St7789Display::setInverted(geometry().invert != uiInverted_);
+    }
 }
 
 bool St7789_1in69::setBacklight(uint8_t level) {
