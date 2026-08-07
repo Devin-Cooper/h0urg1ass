@@ -24,6 +24,7 @@ enum class Feedback : uint8_t {
     AlarmOff,
     SettingsOpen,  ///< the settings screen appeared
     SettingsSaved, ///< settings were written to flash
+    Booted,        ///< powered on -- the first thing the device says
 };
 
 /// Ties motion to the timer, and owns everything the faces do not.
@@ -59,8 +60,19 @@ public:
 
     bool alarmSounding() const { return alarmOn_; }
 
-    /// True when the device is laid flat, which is when the picker is live.
-    bool settingPosture() const { return flat_; }
+    /// True when the picker is live: the device is flat, OR the timer is idle.
+    ///
+    /// Two clauses, and both are load-bearing. The `flat_` clause is the
+    /// original behaviour, kept whole. The Idle clause is what lets a device
+    /// powered on upright be set in the hand without laying it down.
+    ///
+    /// Deliberately Idle rather than !isRunning(): a PAUSED timer keeps the
+    /// hourglass, because at 90 degrees what the user needs to see is how much
+    /// is left rather than a pair of wheels, and an EXPIRED one must keep
+    /// reading DONE.
+    bool settingPosture() const {
+        return flat_ || timer_.state() == TimerModel::State::Idle;
+    }
 
     /// Keep the setting posture in sync with the *measured* orientation.
     ///

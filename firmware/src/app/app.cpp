@@ -3,9 +3,9 @@
 namespace h0 {
 
 bool App::setDuration(uint64_t us, uint64_t now) {
-    // The dial is live only in the setting posture. Without this a pocket could
+    // The dial is live only where the picker is. Without this a pocket could
     // rewrite a running timer, and the gesture vocabulary has no undo.
-    if (!flat_) return false;
+    if (!settingPosture()) return false;
     (void)now;
     timer_.setDuration(us);
     alarmOn_ = false;
@@ -34,30 +34,39 @@ Feedback App::onMotion(MotionEvent e, uint64_t now) {
 
         case MotionEvent::Raised: {
             flat_ = false;
-            if (timer_.duration() == 0) return Feedback::Rejected; // nothing dialled in
-            switch (timer_.state()) {
-                case TimerModel::State::Paused:
-                    timer_.resume(now);
-                    return Feedback::Resumed;
-                case TimerModel::State::Idle:
-                    timer_.start(now);
-                    return Feedback::Started;
-                case TimerModel::State::Expired:
-                    // Standing up a finished timer does not restart it. Restart
-                    // is the flip, and it should stay the only thing that is.
-                    return Feedback::Rejected;
-                case TimerModel::State::Running:
-                    return Feedback::None;
+            if (timer_.state() == TimerModel::State::Paused) {
+                timer_.resume(now);
+                return Feedback::Resumed;
             }
+            // Standing it up is no longer a start -- upright is where you SET
+            // it, and the flip is the only way to begin. Silent rather than
+            // Rejected: this is an ordinary way to hold the device, and a
+            // posture the user adopts constantly must not buzz at them.
             return Feedback::None;
         }
 
         case MotionEvent::Flip: {
             flat_ = false;
             if (timer_.duration() == 0) return Feedback::Rejected;
+            // Reset is the most emphatic pattern in the buzzer's vocabulary
+            // because it is the only destructive action. A flip from idle
+            // destroys nothing, so it must not claim to.
+            const bool wasIdle = (timer_.state() == TimerModel::State::Idle);
             timer_.reset(now);
             alarmOn_ = false;
-            return Feedback::Reset;
+            return wasIdle ? Feedback::Started : Feedback::Reset;
+        }
+
+        case MotionEvent::Tipped: {
+            flat_ = false;
+            // Only ever a pause. Flat and face down already own silencing an
+            // alarm and acknowledging an expiry; giving a third posture a
+            // fourth job adds edges for nothing.
+            if (timer_.isRunning()) {
+                timer_.pause(now);
+                return Feedback::Paused;
+            }
+            return Feedback::None;
         }
 
         case MotionEvent::Silence: {
@@ -74,12 +83,6 @@ Feedback App::onMotion(MotionEvent e, uint64_t now) {
 
         case MotionEvent::None:
             return Feedback::None;
-
-        case MotionEvent::Tipped:
-            // Handled starting Task 2; unhandled here is inert by construction
-            // (falls through to the return below), added only to satisfy
-            // -Werror=switch.
-            break;
     }
     return Feedback::None;
 }
