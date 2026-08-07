@@ -257,8 +257,11 @@ TEST_CASE("standing it up from its side resumes") {
     hold(t, ON_EDGE, 1500, clock);
     REQUIRE(t.current() == Orientation::OnSide);
 
+    // Righted, not Raised: only lying flat may start an idle timer, and
+    // OnSide is not that.
     auto e = hold(t, UPRIGHT, 1000, clock);
-    CHECK(count(e, MotionEvent::Raised) == 1);
+    CHECK(count(e, MotionEvent::Righted) == 1);
+    CHECK(count(e, MotionEvent::Raised) == 0);
     CHECK(count(e, MotionEvent::Flip) == 0);
 }
 
@@ -281,8 +284,11 @@ TEST_CASE("a rested side does NOT disarm the flip") {
 
 TEST_CASE("picking it up from flat through the side still resumes") {
     // main.cpp and app.hpp both record that flat -> edge -> upright never
-    // produces Raised, so the picker stays live in the hand. Edge is now in the
-    // Raised condition, which closes it.
+    // produces an event at all if Edge is left out of both conditions, so the
+    // picker stays live in the hand. Edge is in the Righted condition, which
+    // closes that -- but as Righted, not Raised: Edge is a transitional
+    // wobble, not lying flat, and must not be a launch posture even when it
+    // is reached by way of flat.
     OrientationTracker t;
     uint64_t clock = 0;
     hold(t, UPRIGHT, 1000, clock);
@@ -298,7 +304,68 @@ TEST_CASE("picking it up from flat through the side still resumes") {
     REQUIRE(t.current() == Orientation::Edge);
 
     auto e = hold(t, UPRIGHT, 1000, clock);
-    CHECK(count(e, MotionEvent::Raised) == 1);
+    CHECK(count(e, MotionEvent::Righted) == 1);
+    CHECK(count(e, MotionEvent::Raised) == 0);
+}
+
+TEST_CASE("Raised vs Righted is decided by source posture") {
+    // The split that closes the asymmetry: only lying flat may start an idle
+    // timer, so only FlatBack -> upright may say Raised. OnSide and Edge both
+    // return to vertical too, but say Righted instead, which App never lets
+    // start anything. FaceDown says neither -- unchanged from before the
+    // split.
+
+    SUBCASE("flat -> upright says Raised") {
+        OrientationTracker t;
+        uint64_t clock = 0;
+        hold(t, UPRIGHT, 1000, clock);
+        hold(t, FLAT, 1000, clock);
+        REQUIRE(t.current() == Orientation::FlatBack);
+
+        auto e = hold(t, UPRIGHT, 1000, clock);
+        CHECK(count(e, MotionEvent::Raised) == 1);
+        CHECK(count(e, MotionEvent::Righted) == 0);
+    }
+
+    SUBCASE("OnSide -> upright says Righted, not Raised") {
+        OrientationTracker t;
+        uint64_t clock = 0;
+        hold(t, UPRIGHT, 1000, clock);
+        hold(t, ON_EDGE, 1500, clock);
+        REQUIRE(t.current() == Orientation::OnSide);
+
+        auto e = hold(t, UPRIGHT, 1000, clock);
+        CHECK(count(e, MotionEvent::Righted) == 1);
+        CHECK(count(e, MotionEvent::Raised) == 0);
+    }
+
+    SUBCASE("Edge -> upright says Righted, not Raised") {
+        OrientationTracker t;
+        uint64_t clock = 0;
+        hold(t, UPRIGHT, 1000, clock);
+        // Under kFlatEnter (not flat) and under kVerticalEnter (not upright),
+        // |x| ~ 0 (nowhere near OnSide): classifies Edge, same vector as "a
+        // tilted-back device is Edge, not OnSide, and stays silent" above.
+        const Vec3 TILTED_BACK{0.0f, 0.600f, -0.800f};
+        hold(t, TILTED_BACK, 1000, clock);
+        REQUIRE(t.current() == Orientation::Edge);
+
+        auto e = hold(t, UPRIGHT, 1000, clock);
+        CHECK(count(e, MotionEvent::Righted) == 1);
+        CHECK(count(e, MotionEvent::Raised) == 0);
+    }
+
+    SUBCASE("FaceDown -> upright says neither") {
+        OrientationTracker t;
+        uint64_t clock = 0;
+        hold(t, UPRIGHT, 1000, clock);
+        hold(t, FACEDOWN, 1000, clock);
+        REQUIRE(t.current() == Orientation::FaceDown);
+
+        auto e = hold(t, UPRIGHT, 1000, clock);
+        CHECK(count(e, MotionEvent::Raised) == 0);
+        CHECK(count(e, MotionEvent::Righted) == 0);
+    }
 }
 
 TEST_CASE("split thresholds keep a reading in the hysteresis band stable") {
@@ -355,6 +422,7 @@ TEST_CASE("power-on in any posture emits no event") {
         const auto e = hold(t, start, 2000, clock);
         CHECK(count(e, MotionEvent::Flip) == 0);
         CHECK(count(e, MotionEvent::Raised) == 0);
+        CHECK(count(e, MotionEvent::Righted) == 0);
         CHECK(count(e, MotionEvent::Tipped) == 0);
     }
 }

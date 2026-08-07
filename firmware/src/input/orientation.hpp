@@ -39,6 +39,7 @@ enum class MotionEvent : uint8_t {
     Raised,   ///< stood back up from flat: resume
     Silence,  ///< turned face down: silence a ringing alarm
     Tipped,   ///< rested on its end: pause
+    Righted,  ///< back to vertical from its side or a tilt: resume, never start
 };
 
 /// Classifies how the device is being held, with the hysteresis that makes it

@@ -6,6 +6,8 @@
 //   turn it over      start it -- and, over a live run, reset it to full
 //   rest it on end    pause, after a second
 //   lay it flat       pause, and dial a new time
+//   stand it up       off flat: start if idle, resume if paused; off its
+//                     side or a tilt: resume only -- never starts
 //   face down         silence a ringing alarm
 //
 // A debug strip along the bottom reports the raw IMU vector and the classified
@@ -561,7 +563,8 @@ int main() {
     watchdog_enable(8000, true);
 
     printf("\nready -- dial a time, turn it over to start.\n");
-    printf("rest it on its end or lay it flat to pause; stand it up to resume.\n");
+    printf("stand it up off flat to start or resume; off its side, resume only.\n");
+    printf("rest it on its end or lay it flat to pause.\n");
     printf("turn it over again to reset. face down to silence.\n");
     printf("drag the MIN / SEC columns whenever the picker is showing.\n\n");
 

@@ -64,14 +64,18 @@ MotionEvent OrientationTracker::update(const Vec3& g, uint64_t now) {
             lastVertical_ = observed;
             flipArmed_ = true;
             if (isFlip) return MotionEvent::Flip;
-            // Standing up from ANY non-vertical posture is a resume. FaceDown is
-            // excluded: it acknowledges an expiry, so there is never a paused
-            // timer to resume, and it is also how the device ends up when put
-            // away. Standing up from Unknown at power-on is not an event at all,
-            // or the device would appear to start itself.
-            if (previous == Orientation::FlatBack || previous == Orientation::OnSide ||
-                previous == Orientation::Edge)
-                return MotionEvent::Raised;
+            // Stood up off a surface. Distinct from Righted because only this
+            // one may START an idle timer: lying flat needs |g.z| >= 0.85 and is
+            // an unambiguous, deliberate resting posture, whereas Edge commits
+            // after 350 ms on any tilt past ~45 degrees -- straightening up
+            // after a wobble must not launch a timer.
+            if (previous == Orientation::FlatBack) return MotionEvent::Raised;
+            // Back upright from its side, or from a tilt on the way. Resume
+            // only. Edge is included so that flat -> edge -> upright still
+            // reaches App -- that path produced nothing at all before, which
+            // left the picker live in the hand.
+            if (previous == Orientation::OnSide || previous == Orientation::Edge)
+                return MotionEvent::Righted;
             return MotionEvent::None;
         }
 

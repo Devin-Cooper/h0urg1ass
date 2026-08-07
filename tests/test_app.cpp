@@ -27,12 +27,13 @@ void startRun(App& a, uint64_t now) {
 
 TEST_CASE("the core loop: dial it, turn it over, it runs") {
     App a;
-    dial(a, 5 * MIN, 0);
-    CHECK(a.settingPosture());
-    CHECK(a.timer().state() == TimerModel::State::Idle);
 
-    // Standing it up is no longer a start -- upright is where you SET it.
-    CHECK(a.onMotion(MotionEvent::Raised, 1 * SEC) == Feedback::None);
+    // Powering on upright must not self-start: nothing lays this App flat, so
+    // this is exactly that case. A fresh App is Idle and not flat_, so
+    // settingPosture() is already true and the dial is live without a Settled
+    // event -- and nothing happens on its own until the flip.
+    CHECK(a.settingPosture());
+    CHECK(a.setDuration(5 * MIN, 0));
     CHECK(a.timer().state() == TimerModel::State::Idle);
     CHECK(a.settingPosture());   // still Idle, so the picker is still live
 
@@ -147,27 +148,34 @@ TEST_CASE("laying a finished timer flat clears it for the next one") {
 }
 
 TEST_CASE("standing up a finished timer does not restart it") {
-    // Restart is the flip, and it should stay the only thing that is.
+    // Restart is the flip, and it should stay the only thing that is. This is
+    // about the EXPIRED state specifically, before it has been acknowledged:
+    // once Silence clears it to Idle, standing it up with the same duration
+    // still dialled is indistinguishable from any other Idle timer, and DOES
+    // go -- that is the feature this task adds, not a bug. What must stay
+    // true is that a ringing, un-silenced alarm cannot be raised into a
+    // restart -- the Expired path is a dead end, not a shortcut around Flip.
     App a;
     dial(a, 1 * MIN, 0);
     startRun(a, 0);
     REQUIRE(a.tick(60 * SEC) == Feedback::AlarmOn);
     REQUIRE(a.alarmSounding());
-    a.onMotion(MotionEvent::Silence, 61 * SEC); // silence the ringing alarm
-    CHECK_FALSE(a.alarmSounding());
-    REQUIRE(a.timer().state() == TimerModel::State::Idle); // acknowledged: cleared to Idle
 
-    a.onMotion(MotionEvent::Settled, 62 * SEC);
-    // Flat cleared it to Idle, but standing up no longer starts anything.
-    CHECK(a.onMotion(MotionEvent::Raised, 63 * SEC) == Feedback::None);
-    CHECK(a.timer().state() == TimerModel::State::Idle);
+    CHECK(a.onMotion(MotionEvent::Raised, 61 * SEC) == Feedback::None);
+    CHECK(a.timer().state() == TimerModel::State::Expired);
+    CHECK(a.alarmSounding());
 }
 
 TEST_CASE("a flip with no duration dialled is refused") {
     App a;
-    // Raised is not a command any more, so it says nothing at all.
-    CHECK(a.onMotion(MotionEvent::Raised, 0) == Feedback::None);
-    // Flip is the start, so it still gets an audible refusal.
+    // Raised can start now too, but only with something to start -- refused
+    // the same way Flip is. Checking state() rather than only the return
+    // value matters here: the guard's real job is to stop start() ever being
+    // called, not merely to pick which Feedback to report.
+    CHECK(a.onMotion(MotionEvent::Raised, 0) == Feedback::Rejected);
+    CHECK(a.timer().state() == TimerModel::State::Idle);
+    CHECK(a.timer().state() != TimerModel::State::Expired);
+    // Flip is the other start path, and it still gets an audible refusal.
     CHECK(a.onMotion(MotionEvent::Flip, 1 * SEC) == Feedback::Rejected);
     CHECK(a.timer().state() == TimerModel::State::Idle);
 }
@@ -258,6 +266,44 @@ TEST_CASE("resting it on its side does nothing when nothing is running") {
     }
 }
 
+TEST_CASE("standing it up off flat starts an idle timer") {
+    // The asymmetry this task exists to fix: power on flat, dial a time,
+    // stand it up -- go. No flip required.
+    App a;
+    CHECK(a.setDuration(5 * MIN, 0));
+    REQUIRE(a.timer().state() == TimerModel::State::Idle);
+
+    CHECK(a.onMotion(MotionEvent::Raised, 1 * SEC) == Feedback::Started);
+    CHECK(a.timer().isRunning());
+    CHECK(a.timer().remaining(1 * SEC) == 5 * MIN);
+}
+
+TEST_CASE("Righted resumes a paused timer, same as Raised") {
+    App a;
+    dial(a, 10 * MIN, 0);
+    startRun(a, 0);
+
+    CHECK(a.onMotion(MotionEvent::Settled, 2 * MIN) == Feedback::Paused);
+    CHECK(a.timer().state() == TimerModel::State::Paused);
+
+    // Long after -- the pause is free, same as it is for Raised.
+    CHECK(a.onMotion(MotionEvent::Righted, 62 * MIN) == Feedback::Resumed);
+    CHECK(a.timer().remaining(62 * MIN) == 8 * MIN);
+}
+
+TEST_CASE("Righted on an idle timer does nothing -- it never starts") {
+    // The whole reason Righted exists apart from Raised: standing up off the
+    // side, or straightening from a tilt, must not launch a dialled-in idle
+    // timer the way standing up off flat does.
+    App a;
+    CHECK(a.setDuration(5 * MIN, 0));
+    REQUIRE(a.timer().state() == TimerModel::State::Idle);
+
+    CHECK(a.onMotion(MotionEvent::Righted, 1 * SEC) == Feedback::None);
+    CHECK(a.timer().state() == TimerModel::State::Idle);
+    CHECK_FALSE(a.timer().isRunning());
+}
+
 TEST_CASE("the flip says Started from idle and Reset over a live run") {
     // Feedback::Reset is documented as the most emphatic pattern in the set
     // because it is the only destructive action. A flip from idle destroys
@@ -301,8 +347,11 @@ TEST_CASE("the picker follows the timer state, not only the posture") {
     App a;
 
     SUBCASE("idle and NOT flat -- the new clause") {
-        dial(a, 5 * MIN, 0);
-        a.onMotion(MotionEvent::Raised, 1 * SEC);   // stood up, still idle
+        // A fresh App is already Idle and not flat_ -- no posture event
+        // needed to reach this state. Raised is deliberately not used here:
+        // it now STARTS an Idle timer with a duration, which would make this
+        // subcase prove nothing about the Idle clause itself.
+        CHECK(a.setDuration(5 * MIN, 0));
         CHECK_FALSE(a.timer().isRunning());
         CHECK(a.settingPosture());
     }

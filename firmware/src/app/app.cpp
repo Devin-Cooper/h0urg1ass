@@ -38,10 +38,30 @@ Feedback App::onMotion(MotionEvent e, uint64_t now) {
                 timer_.resume(now);
                 return Feedback::Resumed;
             }
-            // Standing it up is no longer a start -- upright is where you SET
-            // it, and the flip is the only way to begin. Silent rather than
-            // Rejected: this is an ordinary way to hold the device, and a
-            // posture the user adopts constantly must not buzz at them.
+            if (timer_.state() == TimerModel::State::Idle) {
+                // Stood up off a surface with a time dialled in: go. This is the
+                // one path that starts without a flip, and it exists because
+                // flat is the one posture you cannot flip out of -- settling
+                // flat clears flipArmed_, and at power-on there is no previous
+                // vertical posture to flip from, so the first upright would
+                // otherwise only arm the flip and do nothing.
+                if (timer_.duration() == 0) return Feedback::Rejected;
+                timer_.start(now);
+                return Feedback::Started;
+            }
+            // Expired stays expired. The flip is the restart.
+            return Feedback::None;
+        }
+
+        case MotionEvent::Righted: {
+            flat_ = false;
+            // Resume only. Standing it up off its side is how you carry on after
+            // a 90-degree pause; it is deliberately NOT a start, because Edge
+            // reaches here after 350 ms of any tilt past ~45 degrees.
+            if (timer_.state() == TimerModel::State::Paused) {
+                timer_.resume(now);
+                return Feedback::Resumed;
+            }
             return Feedback::None;
         }
 
