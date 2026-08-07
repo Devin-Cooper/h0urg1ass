@@ -11,6 +11,7 @@
 #include <cstdio>
 
 #include "app/settings_ui.hpp"
+#include "faces/boot_face.hpp"
 #include "faces/layout.hpp"
 #include "faces/power_face.hpp"
 #include "faces/settings_face.hpp"
@@ -1974,6 +1975,42 @@ TEST_CASE("CAL shows AT LIMIT at both ends of the range, not just past them") {
     s.batCalPermille = h0::kCalMax;
     h0::SettingsFace::formatValue(h0::RowId::Cal, 0, s, bat, buf, sizeof(buf));
     CHECK(std::string(buf) == "AT LIMIT");
+}
+
+// ---------------------------------------------------------------- the boot --
+
+TEST_CASE("the boot splash is inside the safe box and inside the corners") {
+    Panel fb;
+    h0::BootFace::renderAt(fb);
+
+    // Something is actually drawn -- a face that clears to WHITE and returns
+    // would otherwise pass every geometric check below.
+    int ink = 0;
+    for (int16_t y = 0; y < 280; ++y)
+        for (int16_t x = 0; x < 240; ++x)
+            if (fb.getPixel(x, y) == BLACK) ++ink;
+    CHECK(ink > 100);
+
+    // Every inked pixel clears BOTH the safe box and the r=44 rounded-rect
+    // clip. The corner test is the disc one: within a corner quadrant the
+    // visible region is a disc of radius 44 centred 44 px inwards.
+    int outsideSafe = 0, clipped = 0;
+    for (int16_t y = 0; y < 280; ++y) {
+        for (int16_t x = 0; x < 240; ++x) {
+            if (fb.getPixel(x, y) != BLACK) continue;
+            if (x < h0::safe::X || x >= h0::safe::X + h0::safe::W ||
+                y < h0::safe::Y || y >= h0::safe::Y + h0::safe::H) ++outsideSafe;
+
+            const int16_t cx = (x < 44) ? 44 : (x > 195 ? 195 : x);
+            const int16_t cy = (y < 44) ? 44 : (y > 235 ? 235 : y);
+            const int dx = x - cx, dy = y - cy;
+            if (dx * dx + dy * dy > 44 * 44) ++clipped;
+        }
+    }
+    CHECK(outsideSafe == 0);
+    CHECK(clipped == 0);
+
+    checkGolden(fb, "boot@splash");
 }
 
 

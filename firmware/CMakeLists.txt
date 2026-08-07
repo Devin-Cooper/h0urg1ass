@@ -54,6 +54,7 @@ add_executable(h0urg1ass
     src/faces/setting_face.cpp
     src/faces/settings_face.cpp
     src/faces/power_face.cpp
+    src/faces/boot_face.cpp
     src/power/battery_model.cpp
     src/power/backlight_policy.cpp
     src/power/power_policy.cpp
