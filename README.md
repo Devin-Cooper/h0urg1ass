@@ -11,7 +11,7 @@ rendered entirely in one bit.
 A 1.69″ pocket timer you operate mostly by **moving it**. Flip it, set it down, pick it
 up — the IMU is the primary control surface, because a 240×280 round-cornered screen has
 no room for a control panel. Touch is reserved for the one thing gestures are bad at:
-dialling in a duration, on two spinner columns that are live whenever no timer is running. The
+dialling in a duration, on two spinner columns that are live whenever the timer is idle or the device is lying flat. The
 buzzer confirms that a gesture registered, so you are never left guessing whether the device
 saw you.
 
@@ -21,13 +21,14 @@ limit — see [Visual language](docs/visual-language.md).
 
 ## What it does
 
-Dial a duration — the two spinner columns are live whenever no timer is running, so you can set it
-in the hand without putting it down. Turn it over to start, the gesture a real hourglass already
-has. Rest it on its end or lay it flat to pause; stand it up again to carry on. Turn it over during
-a run and it resets to full and runs again. Set it face down to silence a finished one.
+Dial a duration — the spinner columns are live whenever the timer is idle, so you can set one in
+the hand at power-on without putting the device down, and laying it flat brings them back at any
+time. Turn it over to start, the gesture a real hourglass already has. Rest it on its end or lay
+it flat to pause; stand it up again to carry on. Turn it over during a run and it resets to full
+and runs again. Set it face down to silence a finished one.
 
-Lay it flat and swipe sideways for a settings screen — theme, brightness, the dim-then-blank
-timeouts, the alarm length, and the battery calibration.
+Swipe sideways whenever the columns are showing for a settings screen — theme, brightness, the
+dim-then-blank timeouts, the alarm length, and the battery calibration.
 
 There is one screen: a split-flap `MM:SS` readout on an opaque panel, over a falling-sand
 simulation. The board carries the number; the sand carries the feeling of the time passing.
