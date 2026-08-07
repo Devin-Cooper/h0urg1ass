@@ -150,9 +150,12 @@ TEST_CASE("standing up a finished timer does not restart it") {
     // Restart is the flip, and it should stay the only thing that is.
     App a;
     dial(a, 1 * MIN, 0);
-    a.onMotion(MotionEvent::Raised, 0);
-    a.tick(60 * SEC);
-    a.onMotion(MotionEvent::Silence, 61 * SEC); // silence it, still expired-ish
+    startRun(a, 0);
+    REQUIRE(a.tick(60 * SEC) == Feedback::AlarmOn);
+    REQUIRE(a.alarmSounding());
+    a.onMotion(MotionEvent::Silence, 61 * SEC); // silence the ringing alarm
+    CHECK_FALSE(a.alarmSounding());
+    REQUIRE(a.timer().state() == TimerModel::State::Idle); // acknowledged: cleared to Idle
 
     a.onMotion(MotionEvent::Settled, 62 * SEC);
     // Flat cleared it to Idle, but standing up no longer starts anything.
