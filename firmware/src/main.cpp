@@ -318,6 +318,7 @@ int main() {
     static board::St7789_1in69 lcd;
     if (!lcd.begin()) {
         printf("FATAL: display init failed\n");
+        buzzer.stop(); // otherwise the boot chirp holds its tone forever
         while (true) tight_loop_contents();
     }
     printf("SPI %.2f MHz\n", lcd.actualBaud() / 1e6);
@@ -725,18 +726,30 @@ int main() {
 
             if (ev != h0::MotionEvent::None) {
                 lastInteractionUs = now;
+                bool menuConsumedEvent = false;
                 if (settingsUi.isOpen()) {
-                    // Leaving flat cancels, and the motion is CONSUMED: a raise
-                    // that closes settings must not also start the timer.
+                    // Leaving flat cancels the edit either way. Most events are
+                    // then CONSUMED too: a raise that closes settings must not
+                    // also resume the timer.
                     //
-                    // Only Raised and Silence are reachable from flat. Flip is
-                    // not -- orientation.cpp clears flipArmed_ on entering
-                    // FlatBack -- so a Flip branch here would be dead code.
+                    // Flip is the one exception, and it is not dead code:
+                    // settingPosture() now opens this menu whenever the device
+                    // is upright and Idle, not only flat, so a Flip can land
+                    // here -- power on upright, swipe sideways to open
+                    // settings, then turn it over. "Turn it over to start" is
+                    // the central rule of this gesture model and has to mean
+                    // the same thing everywhere, so the menu is still
+                    // cancelled but the Flip is also handed to App below: the
+                    // timer starts, exactly as if the menu had never opened.
                     const h0::Settings restored = settingsUi.cancel();
                     applySettings(restored);
                     resetPickerColumns();
-                    say(h0::Feedback::Rejected);
-                } else {
+                    if (ev != h0::MotionEvent::Flip) {
+                        say(h0::Feedback::Rejected);
+                        menuConsumedEvent = true;
+                    }
+                }
+                if (!menuConsumedEvent) {
                     const h0::Feedback fbk = app.onMotion(ev, now);
                     if (fbk != h0::Feedback::None) {
                         say(fbk);
@@ -757,8 +770,9 @@ int main() {
             }
         }
 
-        // The dial is live only while the device is flat -- the setting posture.
-        // Elsewhere a pocket could rewrite a running timer, and there is no undo.
+        // The dial is live in the setting posture -- flat OR upright-and-Idle,
+        // not only flat. Elsewhere a pocket could rewrite a running timer,
+        // and there is no undo.
         // Read on the latched interrupt, so no bus transaction happens while
         // nothing is being touched -- which is what stopped the bus wedging.
         board::TouchPoint tp{};
@@ -829,10 +843,11 @@ int main() {
             // `usable` was computed above where the read landed (or forced false
             // by the inferred-release path); reused here rather than re-derived.
             //
-            // Entry and exit: a sideways swipe, while flat. Both directions mean
-            // the same thing, which sidesteps the coordinate mirroring above
-            // entirely -- a gesture that means the same either way does not care
-            // which way up the device is held.
+            // Entry and exit: a sideways swipe, in the setting posture (flat OR
+            // upright-and-Idle). Both directions mean the same thing, which
+            // sidesteps the coordinate mirroring above entirely -- a gesture
+            // that means the same either way does not care which way up the
+            // device is held.
             //
             // Evaluated BEFORE the reset below, or the gate's per-touch latch is
             // cleared before it can be read.
@@ -1088,7 +1103,7 @@ int main() {
         // no alarm, and the screen ALREADY DARK. The last is not politeness --
         // ~400 ms of masked interrupts drops the ~1 ms edge-latched touch pulse
         // outright, so this has to happen when nobody is touching the glass.
-        if (settingsStore.needsErase() && !app.settingPosture() &&
+        if (settingsStore.needsErase() && !app.isFlat() &&
             !settingsUi.isOpen() && !app.timer().isRunning() &&
             !app.alarmSounding() && want.level == 0) {
             settingsStore.runDeferredErase();
@@ -1107,9 +1122,9 @@ int main() {
             } else if (settingsUi.isOpen()) {
                 h0::SettingsFace::renderAt(fb, settingsUi, batteryReading);
             } else if (app.settingPosture()) {
-                // The dial replaces the face while flat: a rotary control with
-                // no visible ring is undiscoverable, and the timer is not
-                // counting anyway.
+                // The dial replaces the face in the setting posture -- flat OR
+                // upright-and-Idle: a rotary control with no visible ring is
+                // undiscoverable, and the timer is not counting anyway.
                 // The DURATION, not the remaining time. The picker edits
                 // duration, so showing remaining meant that laying down a
                 // part-run timer displayed one number and edited another: run

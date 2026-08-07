@@ -68,10 +68,11 @@ private:
     /// True once the button has been observed up at least once. A press that
     /// is already down the first time update() ever runs may have started
     /// before boot -- PowerButton::begin() lands seconds after main()'s idle
-    /// window, LCD init and the sand probe, with the panel dark the whole
-    /// time -- so racing it against the ordinary hold thresholds would treat
-    /// "already holding when the device switched on" as "holding to power
-    /// off". Such a press is ignored entirely until it is released.
+    /// window, LCD init and the sand probe, with the boot splash lit but the
+    /// power policy not yet watching -- so racing it against the ordinary
+    /// hold thresholds would treat "already holding when the device switched
+    /// on" as "holding to power off". Such a press is ignored entirely until
+    /// it is released.
     bool seenRelease_ = false;
 };
 

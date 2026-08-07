@@ -53,9 +53,14 @@ enum class MotionEvent : uint8_t {
 ///   leaving it, so a reading sitting exactly on a boundary cannot oscillate.
 /// * **The flip requires a direct vertical-to-vertical change.** Turning the
 ///   device over is one continuous motion, so passing *through* other angles is
-///   expected -- but if it *settles* flat in between, the user set it down and
-///   picked it up again, which must not destroy a running timer. Settling into
-///   any non-vertical posture disarms the flip.
+///   expected -- but if it *settles* FlatBack or FaceDown in between, the user
+///   set it down and picked it up again, which must not destroy a running
+///   timer. Settling into either disarms the flip.
+///
+///   OnSide is the deliberate exception: resting the device on its end does
+///   NOT disarm the flip. The user gets to decide that 180 degrees always
+///   means restart, whether or not it paused en route -- a paused device
+///   picked up the other way round loses its elapsed time, on purpose.
 ///
 /// That last rule is the one that matters. Reset is the only destructive action
 /// in the product, and "picked it up the other way round" is a thing people do
@@ -99,7 +104,8 @@ public:
     Orientation pending() const { return candidate_; }
 
     /// True when a flip would be honoured. False after the device has settled
-    /// somewhere non-vertical, until it stands up again.
+    /// FlatBack or FaceDown, until it stands up again. OnSide is the
+    /// deliberate exception -- see the class doc -- and does NOT clear this.
     bool flipArmed() const { return flipArmed_; }
 
 private:

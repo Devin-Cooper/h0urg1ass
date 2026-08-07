@@ -96,9 +96,12 @@ MotionEvent OrientationTracker::update(const Vec3& g, uint64_t now) {
                                                       : MotionEvent::Tipped;
 
         case Orientation::Edge:
-            // On its side is deliberately not a command, but it is also not a
-            // settled posture -- rotating the device through its side is exactly
-            // how you turn it over, so the flip stays armed.
+            // Edge is the out-of-plane tilt, not "on its side" -- OnSide
+            // covers that now, and OnSide *is* a command (Tipped). Edge is
+            // deliberately not one: it is a device merely tilted in the hand,
+            // or passing between postures on its way somewhere else, and
+            // rotating through it is exactly how a flip happens -- so the
+            // flip stays armed.
             return MotionEvent::None;
 
         case Orientation::Unknown:

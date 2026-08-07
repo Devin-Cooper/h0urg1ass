@@ -53,9 +53,9 @@ public:
     /// eventually giving up. Cheap and safe to call every frame.
     Feedback tick(uint64_t now);
 
-    /// Dial in a duration. Only honoured while the device is flat -- that is
-    /// the setting posture, and a dial that worked while running would let a
-    /// pocket rewrite the timer.
+    /// Dial in a duration. Only honoured in the setting posture --
+    /// settingPosture(), flat OR upright-and-Idle, not merely flat -- because
+    /// a dial that worked while running would let a pocket rewrite the timer.
     bool setDuration(uint64_t us, uint64_t now);
 
     bool alarmSounding() const { return alarmOn_; }
@@ -73,6 +73,12 @@ public:
     bool settingPosture() const {
         return flat_ || timer_.state() == TimerModel::State::Idle;
     }
+
+    /// The measured flat posture on its own, WITHOUT settingPosture()'s Idle
+    /// clause. Only for callers that genuinely mean "lying on a table" rather
+    /// than "the picker is live" -- the deferred flash erase, which needs the
+    /// device physically at rest.
+    bool isFlat() const { return flat_; }
 
     /// Keep the setting posture in sync with the *measured* orientation.
     ///
