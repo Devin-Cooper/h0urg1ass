@@ -693,10 +693,11 @@ int main() {
             // needs, so the picker would stay live in the hand.
             app.setFlat(orient.current() == h0::Orientation::FlatBack);
 
-            // Any change of posture is interaction, event or not. Section 7.4
-            // notes this happens without an event too: flat -> edge -> upright
-            // never produces Raised, so a wake source that only watched events
-            // would leave a device picked up and turned over dark.
+            // Any change of posture is interaction, event or not. Posture is
+            // derived from measurement every frame rather than accumulated from
+            // events, so it stays correct even for transitions that emit nothing
+            // (Edge → Edge, or anything reaching FaceDown), and a missed event
+            // cannot leave this stale.
             static h0::Orientation lastOrientation = h0::Orientation::Unknown;
             if (orient.current() != lastOrientation) {
                 lastOrientation = orient.current();
@@ -764,8 +765,8 @@ int main() {
                 }
             }
 
-            // Backstop for the paths that leave flat WITHOUT an event at all --
-            // flat -> edge -> upright never produces Raised.
+            // Backstop for the paths that leave flat without an event: catch the
+            // menu being left open when the setting posture is lost by any route.
             if (settingsUi.isOpen() && !app.settingPosture()) {
                 applySettings(settingsUi.cancel());
                 resetPickerColumns();

@@ -22,10 +22,10 @@ limit — see [Visual language](docs/visual-language.md).
 ## What it does
 
 Dial a duration — the spinner columns are live whenever the timer is idle or the device is lying
-flat, so you can set one in the hand at power-on without putting the device down. Turn it over
-to start, the gesture a real hourglass already has. Rest it on its end or lay it flat to pause;
-stand it up again to carry on. Turn it over during a run and it resets to full and runs again.
-Set it face down to silence a finished one.
+flat, so you can set one in the hand at power-on without putting the device down. Stand it up off
+the table to start it, or turn it over, the gesture a real hourglass already has. Rest it on its
+end or lay it flat to pause; stand it up again to carry on. Turn it over during a run and it
+resets to full and runs again. Set it face down to silence a finished one.
 
 Swipe sideways whenever the columns are showing for a settings screen — theme, brightness, the
 dim-then-blank timeouts, the alarm length, and the battery calibration.
