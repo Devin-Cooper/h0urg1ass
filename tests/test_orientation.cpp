@@ -72,8 +72,8 @@ TEST_CASE("postures are classified correctly once settled") {
     CHECK(t.current() == Orientation::FlatBack);
     hold(t, FACEDOWN, 1000, clock);
     CHECK(t.current() == Orientation::FaceDown);
-    hold(t, ON_EDGE, 1000, clock);
-    CHECK(t.current() == Orientation::Edge);
+    hold(t, ON_EDGE, 1500, clock);
+    CHECK(t.current() == Orientation::OnSide);
 }
 
 TEST_CASE("nothing is reported before the dwell elapses") {
@@ -200,6 +200,107 @@ TEST_CASE("walking with it in hand produces no events") {
     CHECK(t.current() == Orientation::UprightA);
 }
 
+TEST_CASE("resting on its side is a pause, but only after a full second") {
+    OrientationTracker t;
+    uint64_t clock = 0;
+    hold(t, UPRIGHT, 1000, clock);
+
+    // 600 ms is past the shared 350 ms dwell and short of kSideDwellUs. If the
+    // per-posture dwell is dropped this fires here, which is the mutation this
+    // case exists to catch.
+    const auto early = hold(t, ON_EDGE, 600, clock);
+    CHECK(early.empty());
+    CHECK(t.current() == Orientation::UprightA);
+    CHECK(t.pending() == Orientation::OnSide);
+
+    const auto late = hold(t, ON_EDGE, 1500, clock);
+    CHECK(count(late, MotionEvent::Tipped) == 1);
+    CHECK(t.current() == Orientation::OnSide);
+}
+
+TEST_CASE("a tilted-back device is Edge, not OnSide, and stays silent") {
+    // The reason OnSide had to be split out of Edge at all. |z| = 0.80 is under
+    // kFlatEnter so it is not flat, and |y| = 0.60 is under kVerticalEnter so it
+    // is not upright -- but |x| = 0, so it is nowhere near its side. This is a
+    // device held tilted back in the hand, and it must not pause anything.
+    OrientationTracker t;
+    uint64_t clock = 0;
+    hold(t, UPRIGHT, 1000, clock);
+
+    const Vec3 TILTED_BACK{0.0f, 0.600f, -0.800f};
+    const auto e = hold(t, TILTED_BACK, 5000, clock);
+    CHECK(count(e, MotionEvent::Tipped) == 0);
+    CHECK(t.current() == Orientation::Edge);
+}
+
+TEST_CASE("a brisk flip does not pause on the way over") {
+    // The whole point of kSideDwellUs. A one-second 180 degree turn spends about
+    // half of it within 45 degrees of horizontal.
+    OrientationTracker t;
+    uint64_t clock = 0;
+    hold(t, UPRIGHT, 1000, clock);
+
+    auto a = sweep(t, UPRIGHT, ON_EDGE, 500, clock);
+    auto b = sweep(t, ON_EDGE, INVERTED, 500, clock);
+    auto c = hold(t, INVERTED, 1000, clock);
+
+    CHECK(count(a, MotionEvent::Tipped) + count(b, MotionEvent::Tipped) +
+          count(c, MotionEvent::Tipped) == 0);
+    CHECK(count(a, MotionEvent::Flip) + count(b, MotionEvent::Flip) +
+          count(c, MotionEvent::Flip) == 1);
+}
+
+TEST_CASE("standing it up from its side resumes") {
+    OrientationTracker t;
+    uint64_t clock = 0;
+    hold(t, UPRIGHT, 1000, clock);
+    hold(t, ON_EDGE, 1500, clock);
+    REQUIRE(t.current() == Orientation::OnSide);
+
+    auto e = hold(t, UPRIGHT, 1000, clock);
+    CHECK(count(e, MotionEvent::Raised) == 1);
+    CHECK(count(e, MotionEvent::Flip) == 0);
+}
+
+TEST_CASE("a rested side does NOT disarm the flip") {
+    // Deliberate, and the user was asked directly: 180 degrees always means
+    // restart, whether or not it paused on the way. The cost is that a paused
+    // device resting on its side, picked up in the OTHER upright, resets and
+    // loses its elapsed time. Recorded here so nobody later reads it as a bug
+    // and "fixes" it.
+    OrientationTracker t;
+    uint64_t clock = 0;
+    hold(t, UPRIGHT, 1000, clock);
+    hold(t, ON_EDGE, 1500, clock);
+    REQUIRE(t.current() == Orientation::OnSide);
+    CHECK(t.flipArmed());
+
+    auto e = hold(t, INVERTED, 1000, clock);
+    CHECK(count(e, MotionEvent::Flip) == 1);
+}
+
+TEST_CASE("picking it up from flat through the side still resumes") {
+    // main.cpp and app.hpp both record that flat -> edge -> upright never
+    // produces Raised, so the picker stays live in the hand. Edge is now in the
+    // Raised condition, which closes it.
+    OrientationTracker t;
+    uint64_t clock = 0;
+    hold(t, UPRIGHT, 1000, clock);
+    hold(t, FLAT, 1000, clock);
+    REQUIRE(t.current() == Orientation::FlatBack);
+
+    // NOT the {0, 0.600, -0.800} used in the case above. Leaving flat is
+    // governed by kFlatExit = 0.70, not kFlatEnter, so |z| = 0.80 would stay
+    // FlatBack and this case would silently test nothing. This vector clears
+    // all three thresholds: |z| 0.62 < 0.70, |y| 0.60 < 0.70, |x| 0.50 < 0.70.
+    const Vec3 HALF_UP{0.50f, 0.60f, -0.62f};
+    hold(t, HALF_UP, 1000, clock);
+    REQUIRE(t.current() == Orientation::Edge);
+
+    auto e = hold(t, UPRIGHT, 1000, clock);
+    CHECK(count(e, MotionEvent::Raised) == 1);
+}
+
 TEST_CASE("split thresholds keep a reading in the hysteresis band stable") {
     // The band between kFlatExit 0.70 and kFlatEnter 0.85 must be sticky in BOTH
     // directions: a reading inside it neither enters flat from upright, nor
@@ -254,6 +355,7 @@ TEST_CASE("power-on in any posture emits no event") {
         const auto e = hold(t, start, 2000, clock);
         CHECK(count(e, MotionEvent::Flip) == 0);
         CHECK(count(e, MotionEvent::Raised) == 0);
+        CHECK(count(e, MotionEvent::Tipped) == 0);
     }
 }
 
@@ -271,8 +373,8 @@ TEST_CASE("rotating through the side keeps the flip armed") {
     OrientationTracker t;
     uint64_t clock = 0;
     hold(t, UPRIGHT, 1000, clock);
-    hold(t, ON_EDGE, 1000, clock); // linger there, longer than the dwell
-    CHECK(t.current() == Orientation::Edge);
+    hold(t, ON_EDGE, 1500, clock); // linger there, longer than kSideDwellUs
+    CHECK(t.current() == Orientation::OnSide);
     CHECK(t.flipArmed());
 
     auto e = hold(t, INVERTED, 1000, clock);

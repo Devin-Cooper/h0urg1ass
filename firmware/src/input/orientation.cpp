@@ -26,6 +26,15 @@ Orientation OrientationTracker::classify(const Vec3& g) const {
         return (g.y > 0.0f) ? Orientation::UprightA : Orientation::UprightB;
     }
 
+    // On its side: the mirror of the vertical test above. Split out of Edge
+    // because Edge is the fallthrough -- it covers a device merely tilted back
+    // in the hand, which must not pause anything. For a pure in-plane rotation
+    // |x|^2 + |y|^2 = 1, so the device is either upright or on its side and
+    // never Edge at all; Edge is what you get tilted OUT of plane.
+    if (absf(g.x) >= kSideEnter && absf(g.x) > absf(g.y)) {
+        return Orientation::OnSide;
+    }
+
     return Orientation::Edge;
 }
 
@@ -39,7 +48,9 @@ MotionEvent OrientationTracker::update(const Vec3& g, uint64_t now) {
         return MotionEvent::None;
     }
     if (observed == current_) return MotionEvent::None;
-    if (now - candidateSince_ < kDwellUs) return MotionEvent::None;
+    // OnSide gets a longer dwell than everything else -- see kSideDwellUs.
+    const uint64_t dwell = (observed == Orientation::OnSide) ? kSideDwellUs : kDwellUs;
+    if (now - candidateSince_ < dwell) return MotionEvent::None;
 
     // The candidate has held long enough. Commit it.
     const Orientation previous = current_;
@@ -53,10 +64,14 @@ MotionEvent OrientationTracker::update(const Vec3& g, uint64_t now) {
             lastVertical_ = observed;
             flipArmed_ = true;
             if (isFlip) return MotionEvent::Flip;
-            // Standing up from flat is a resume; standing up from Unknown at
-            // power-on is not an event at all, or the device would appear to
-            // start itself.
-            if (previous == Orientation::FlatBack) return MotionEvent::Raised;
+            // Standing up from ANY non-vertical posture is a resume. FaceDown is
+            // excluded: it acknowledges an expiry, so there is never a paused
+            // timer to resume, and it is also how the device ends up when put
+            // away. Standing up from Unknown at power-on is not an event at all,
+            // or the device would appear to start itself.
+            if (previous == Orientation::FlatBack || previous == Orientation::OnSide ||
+                previous == Orientation::Edge)
+                return MotionEvent::Raised;
             return MotionEvent::None;
         }
 
@@ -69,6 +84,16 @@ MotionEvent OrientationTracker::update(const Vec3& g, uint64_t now) {
         case Orientation::FaceDown:
             flipArmed_ = false;
             return MotionEvent::Silence;
+
+        case Orientation::OnSide:
+            // Deliberately does NOT clear flipArmed_: the user chose that 180
+            // degrees always means restart, whether or not it paused en route.
+            //
+            // Suppressed at power-on for the same reason Raised is -- a pause is
+            // a command, and the device must not report commands it was not
+            // given.
+            return (previous == Orientation::Unknown) ? MotionEvent::None
+                                                      : MotionEvent::Tipped;
 
         case Orientation::Edge:
             // On its side is deliberately not a command, but it is also not a

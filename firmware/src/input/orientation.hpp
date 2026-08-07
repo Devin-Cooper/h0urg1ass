@@ -27,7 +27,8 @@ enum class Orientation : uint8_t {
     UprightB,  ///< vertical, turned over
     FlatBack,  ///< lying on its back, screen up -- the paused, setting posture
     FaceDown,  ///< lying face down -- silence
-    Edge,      ///< on its side; deliberately not a command
+    OnSide,    ///< resting on its end, within 45 degrees of horizontal -- the pause posture
+    Edge,      ///< tilted between postures, out of plane; deliberately not a command
 };
 
 /// What just happened, if anything.
@@ -37,6 +38,7 @@ enum class MotionEvent : uint8_t {
     Settled,  ///< laid flat on its back: pause
     Raised,   ///< stood back up from flat: resume
     Silence,  ///< turned face down: silence a ringing alarm
+    Tipped,   ///< rested on its end: pause
 };
 
 /// Classifies how the device is being held, with the hysteresis that makes it
@@ -68,8 +70,23 @@ public:
     static constexpr float kFlatExit = 0.70f;
     static constexpr float kVerticalEnter = 0.70f;
 
+    /// On its side, as the mirror of kVerticalEnter. Not split by sign: left-
+    /// side and right-side both mean "resting on its end", and distinguishing
+    /// them would invent a gesture nobody asked for.
+    static constexpr float kSideEnter = 0.70f;
+
     /// How long a candidate posture must hold before it is accepted.
     static constexpr uint64_t kDwellUs = 350'000;
+
+    /// OnSide's own dwell, three times the shared one.
+    ///
+    /// For a pure in-plane rotation |x|^2 + |y|^2 = 1, so this posture covers
+    /// 90 degrees of a 180 degree turn -- about 500 ms of a brisk one-second
+    /// flip. At kDwellUs the pause would fire on the way over every time.
+    ///
+    /// If this proves short in the hand the flip degrades to a resume rather
+    /// than losing the run, which is the safe direction to fail in.
+    static constexpr uint64_t kSideDwellUs = 1'000'000;
 
     /// Feed a filtered gravity reading. Returns the event this sample caused,
     /// which is `None` on the overwhelming majority of calls.

@@ -74,6 +74,12 @@ Feedback App::onMotion(MotionEvent e, uint64_t now) {
 
         case MotionEvent::None:
             return Feedback::None;
+
+        case MotionEvent::Tipped:
+            // Handled starting Task 2; unhandled here is inert by construction
+            // (falls through to the return below), added only to satisfy
+            // -Werror=switch.
+            break;
     }
     return Feedback::None;
 }
