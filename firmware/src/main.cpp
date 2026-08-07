@@ -2,9 +2,10 @@
 //
 // The timer, driven by how you hold it:
 //
-//   stand it up       start, or resume
-//   lay it flat       pause; this is also the setting posture
-//   turn it over      reset to full and run
+//   hold it upright   set the time; the wheels are live whenever it is idle
+//   turn it over      start it -- and, over a live run, reset it to full
+//   rest it on end    pause, after a second
+//   lay it flat       pause, and dial a new time
 //   face down         silence a ringing alarm
 //
 // A debug strip along the bottom reports the raw IMU vector and the classified
@@ -43,6 +44,7 @@
 #include "board/qmi8658.hpp"
 #include "board/st7789_1in69.hpp"
 #include "input/drag_column.hpp"
+#include "faces/boot_face.hpp"
 #include "faces/power_face.hpp"
 #include "faces/setting_face.hpp"
 #include "faces/settings_face.hpp"
@@ -266,6 +268,7 @@ const char* orientationName(h0::Orientation o) {
         case h0::Orientation::UprightB: return "INVERTED";
         case h0::Orientation::FlatBack: return "FLAT";
         case h0::Orientation::FaceDown: return "FACEDOWN";
+        case h0::Orientation::OnSide:   return "ONSIDE";
         case h0::Orientation::Edge:     return "EDGE";
         case h0::Orientation::Unknown:  return "?";
     }
@@ -283,6 +286,7 @@ const char* feedbackName(h0::Feedback f) {
         case h0::Feedback::AlarmOff: return "HUSH";
         case h0::Feedback::SettingsOpen:  return "SETTINGS";
         case h0::Feedback::SettingsSaved: return "SAVED";
+        case h0::Feedback::Booted:   return "BOOT";
         case h0::Feedback::None:     return "";
     }
     return "";
@@ -298,9 +302,57 @@ int main() {
 
     stdio_init_all();
 
-    // Idle before touching hardware. If the app hangs past here USB is already
-    // up, so picotool can still force BOOTSEL and reflashing needs no button.
-    sleep_ms(3000);
+    // Settings first, and before the chirp -- MUTE has to be honoured, and
+    // FlashStore is XIP with no i2c, so nothing that can wedge is touched yet.
+    static board::FlashStore flashStore;
+    static h0::SettingsStore settingsStore(flashStore);
+    settingsStore.load();
+
+    // The chirp is the ROBUST half of the boot signal. Buzzer::begin() is PWM
+    // configuration -- it cannot hang and cannot wedge a bus -- so sounding it
+    // here means the device announces itself even if everything below dies.
+    static board::Buzzer buzzer;
+    buzzer.begin();
+    if (!settingsStore.settings().mute) buzzer.play(h0::Feedback::Booted);
+
+    static board::St7789_1in69 lcd;
+    if (!lcd.begin()) {
+        printf("FATAL: display init failed\n");
+        while (true) tight_loop_contents();
+    }
+    printf("SPI %.2f MHz\n", lcd.actualBaud() / 1e6);
+
+    static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
+    static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
+
+    {
+        const h0::Theme& t = h0::themeFor(
+            static_cast<h0::ThemeId>(settingsStore.settings().themeId));
+        lcd.setColors(t.ink, t.paper);
+    }
+    h0::BootFace::renderAt(fb);
+    tracker.markAllDirty();
+    lcd.pushDirty(fb, tracker.update(fb));
+    lcd.waitIdle();
+    lcd.setBacklight(settingsStore.settings().backlightActive);
+
+    // Idle before touching any bus that can wedge. If the app hangs past here
+    // USB is already up, so picotool can still force BOOTSEL and reflashing
+    // needs no button -- and the watchdog reboots straight back into this
+    // window. It stays three seconds: shortening it would trade that for
+    // cosmetics. The splash above is what stops it looking like the device
+    // never came on.
+    //
+    // Pumped rather than slept: the buzzer's note script advances in update(),
+    // so a bare sleep_ms would hold the chirp on its first note throughout.
+    {
+        const uint64_t bootUntil = time_us_64() + 3'000'000ull;
+        while (time_us_64() < bootUntil) {
+            buzzer.update(time_us_64());
+            sleep_ms(5);
+        }
+        buzzer.stop();
+    }
 
     printf("\n=== h0urg1ass -- interactive ===\n");
     printf("clk_sys=%lu clk_peri=%lu\n", static_cast<unsigned long>(clock_get_hz(clk_sys)),
@@ -311,9 +363,6 @@ int main() {
 
     static board::Battery battery;
     battery.begin();
-
-    static board::Buzzer buzzer;
-    buzzer.begin();
 
     // GPIO14, input with pull-up. Cheap enough to bring up this early; the
     // policy that reads it is seeded down with the other app-state statics.
@@ -335,10 +384,6 @@ int main() {
     printf("touch %s", touchOk ? "ok" : "NOT FOUND");
     if (touchOk) printf(" id 0x%02X", touch.chipId());
     printf("\n");
-
-    static board::FlashStore flashStore;
-    static h0::SettingsStore settingsStore(flashStore);
-    settingsStore.load();
 
     // The learned floor AS IT WAS AT BOOT. Read once, here, and NEVER
     // reassigned -- this is the only thing allowed to arm the low-battery
@@ -362,16 +407,6 @@ int main() {
         printf("battery %u mV (%s)\n", static_cast<unsigned>(b.milliVolts),
                b.calibrated ? "calibrated" : "uncal");
     }
-
-    static board::St7789_1in69 lcd;
-    if (!lcd.begin()) {
-        printf("FATAL: display init failed\n");
-        while (true) tight_loop_contents();
-    }
-    printf("SPI %.2f MHz\n", lcd.actualBaud() / 1e6);
-
-    static onebit::Framebuffer<board::lcd::WIDTH, board::lcd::HEIGHT> fb;
-    static onebit::DirtyRectTracker tracker(board::lcd::WIDTH, board::lcd::HEIGHT);
 
     static h0::TimerFace face;
 
@@ -475,13 +510,9 @@ int main() {
     lcd.clear(WHITE);
     lcd.setBacklight(sessionSettings.backlightActive);
 
-    // Seed a duration without pretending the device is flat. Forcing the
-    // setting posture at boot left the picker live in the hand whenever the
-    // device powered on upright, with the timer face never drawn at all --
-    // there is no transition at power-on for an event-driven flag to observe.
-    app.setFlat(true);
+    // No posture games needed any more: the timer starts Idle, and Idle is a
+    // setting posture, so the dial is simply live.
     app.setDuration(kDefaultDurationUs, time_us_64());
-    app.setFlat(false);
 
     // Measure one sand tick on the real part before committing to the face.
     // Every timing figure for the simulation so far is host, -O2, Apple
@@ -528,10 +559,10 @@ int main() {
     // switched the board off instead of restarting it.
     watchdog_enable(8000, true);
 
-    printf("\nready -- stand it up to start, lay it flat to pause,\n");
-    printf("turn it over to reset, face down to silence.\n");
-    printf("while flat, drag the MIN / SEC columns to set the time.\n");
-    printf("turn it over and the display follows\n\n");
+    printf("\nready -- dial a time, turn it over to start.\n");
+    printf("rest it on its end or lay it flat to pause; stand it up to resume.\n");
+    printf("turn it over again to reset. face down to silence.\n");
+    printf("drag the MIN / SEC columns whenever the picker is showing.\n\n");
 
     uint32_t frames = 0;
     uint64_t lastInteractionUs = 0;
