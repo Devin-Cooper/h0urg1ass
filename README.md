@@ -11,7 +11,7 @@ rendered entirely in one bit.
 A 1.69″ pocket timer you operate mostly by **moving it**. Flip it, set it down, pick it
 up — the IMU is the primary control surface, because a 240×280 round-cornered screen has
 no room for a control panel. Touch is reserved for the one thing gestures are bad at:
-dialling in a duration, on two spinner columns that are live only while it lies flat. The
+dialling in a duration, on two spinner columns that are live whenever no timer is running. The
 buzzer confirms that a gesture registered, so you are never left guessing whether the device
 saw you.
 
@@ -21,15 +21,13 @@ limit — see [Visual language](docs/visual-language.md).
 
 ## What it does
 
-Stand it up to start. Lay it flat to pause, and to dial a new duration. Turn it over to reset
-to full and run again — the gesture a real hourglass already has. Set it face down to silence
-a ringing alarm.
+Dial a duration — the two spinner columns are live whenever no timer is running, so you can set it
+in the hand without putting it down. Turn it over to start, the gesture a real hourglass already
+has. Rest it on its end or lay it flat to pause; stand it up again to carry on. Turn it over during
+a run and it resets to full and runs again. Set it face down to silence a finished one.
 
 Lay it flat and swipe sideways for a settings screen — theme, brightness, the dim-then-blank
-ladder, alarm and blank timeouts, sound and a read-only battery reading, plus calibration and
-a defaults reset. Edits preview live; a second swipe commits them to flash, and lifting the
-device back up cancels and restores instead of starting the timer. Settings survive a power
-cut.
+timeouts, the alarm length, and the battery calibration.
 
 There is one screen: a split-flap `MM:SS` readout on an opaque panel, over a falling-sand
 simulation. The board carries the number; the sand carries the feeling of the time passing.
