@@ -85,6 +85,14 @@ void Buzzer::play(h0::Feedback f) {
             // reads as "put away" rather than as "off you go".
             add(HIGH, 45); add(0, 25); add(MID, 70);
             break;
+        case h0::Feedback::Booted:
+            // Rising from the bottom, and the only pattern that does. Paused is
+            // a single short LOW and Rejected a single long one; Reset and
+            // Started both start at MID. Starting on LOW and climbing is
+            // therefore unmistakable, which matters because this one plays when
+            // the user is not yet looking at the screen.
+            add(LOW, 60); add(0, 40); add(MID, 60); add(0, 40); add(HIGH, 90);
+            break;
         case h0::Feedback::None:
             tone(0);
             return;

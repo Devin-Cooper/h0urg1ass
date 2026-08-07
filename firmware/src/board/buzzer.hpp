@@ -16,6 +16,7 @@ namespace board {
 /// The vocabulary leans on pitch and rhythm rather than volume, which a piezo
 /// through an NPN cannot vary meaningfully:
 ///
+///   booted    low then rising       "I am awake" -- plays before the splash
 ///   started   two rising blips      "off you go"
 ///   paused    one short low blip    "held"
 ///   resumed   one short high blip   "carry on"
